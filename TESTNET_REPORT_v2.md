@@ -114,6 +114,51 @@ For each contract, a paired `grantLease` → `revokeLease` was issued, with `rev
 
 The `grantLease` set the lease's `expiresAt` to year 2286 (Unix `9999999999`), well within the time window. `revokedAt` returned `0` pre-revocation and a non-zero block timestamp post-revocation, demonstrating that the on-chain `¬Revoked` conjunct fires independently of `WithinTime`.
 
+### Solana devnet — chain-agnostic claim exercised on a non-EVM chain
+
+Two surfaces on Solana, both confirmed 2026-05-23:
+
+**Memo anchor (cross-chain v0x02 format):**
+
+| Field | Value |
+|---|---|
+| Signature | `kCUwcmdShwrn7j5QSPpsPnxrBYYMZ6LJDxW1JP7tNaVeBj6UdGeRj2JVDuLAyf8wBhLAbwxCe7QyVDWrBoz71fp` |
+| Slot | 464444665 |
+| Memo program | `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr` (v2) |
+| Domain | `solana-devnet` |
+| Memo wire format | `caap1:` + hex(38-byte CAAP payload) |
+| Decoded payload | `4341415002025c03e0cfc4b8707c2353c7dbcdeb15648069dea53c3d8ca0eb829a5f4f24b79c` |
+
+Explorer: https://explorer.solana.com/tx/kCUwcmdShwrn7j5QSPpsPnxrBYYMZ6LJDxW1JP7tNaVeBj6UdGeRj2JVDuLAyf8wBhLAbwxCe7QyVDWrBoz71fp?cluster=devnet
+
+The Memo program enforces UTF-8 on its data, so the canonical binary CAAP payload (which contains arbitrary digest bytes) is wrapped as the ASCII prefix `caap1:` followed by hex of the payload. Decoding recovers the same 38-byte payload that Bitcoin OP_RETURN carries — same magic, same version, same commit type, same tagged `H(CAAP_ANCHOR ‖ R_X ‖ "solana-devnet")` digest.
+
+**Native registry program (operational parity with EVM contract):**
+
+| Field | Value |
+|---|---|
+| Cluster | Solana devnet |
+| Program ID | `2BcJ1EYpBrphcTSmbpeaxzWwCZegjBvXPDmbAMoxN7TP` |
+| Source | `solana-program/src/lib.rs` (this repo) |
+| Build | `cargo build-sbf` with `opt-level = "z"`, LTO, stripped → 106 KB |
+| Deploy size cost | ~1 SOL of rent |
+| Lease PDA layout | `["lease", subject_pubkey, body_pubkey]` → `{discriminator, scopes: u8, expires_at: i64, revoked_at: i64}` |
+
+`grantLease` → `revokeLease` exercise against PDA `ADEVfKui9y43UN7adcVGk2v7V4LoSNk1chMPaQpehevM`:
+
+| Event | Signature | Resulting account state |
+|---|---|---|
+| pre-grant | — | account does not exist |
+| grantLease (scopes=15, expires_at=year 2027) | `39Z716iuy5tN1J24LoWe97GqZR1Q4R19yEBU9nLRJnxZ4BoQx9MZsxZqWiRXw4pEr8NXxinDnKgrCvAwSbtZztcb` | `{scopes: 15, expires_at: 1811109190, revoked_at: 0}` |
+| revokeLease | `5462KwTrW4CWrYzkRFZd4nth9vRDMYGV59gVCiFJUMqiQRuk8ciQo16tRrcGMwpQa5oGwApcqiELcCPcr8X9ZBzu` | `{scopes: 15, expires_at: 1811109190, revoked_at: 1779573192}` |
+
+Same property the EVM tests prove: **`revoked_at > 0` while `expires_at` is still well in the future** — `¬Revoked` fires inside the time window, exactly as Eq. allow-revoke specifies.  The two conjuncts are state-distinct on Solana (separate i64 fields) the same way they are on EVM (separate mappings).
+
+Explorer (lease PDA — see both grant and revoke txs in account history):
+https://explorer.solana.com/address/ADEVfKui9y43UN7adcVGk2v7V4LoSNk1chMPaQpehevM?cluster=devnet
+
+This is the spec audit's `¬Revoked` conjunct demonstrated on a non-EVM chain with a fundamentally different account model (PDA-per-mapping-entry rather than nested-mapping storage).
+
 ## Relationship to v1 deployments
 
 The v0.1 reference contracts at `0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e` (deployer nonce-0 on each chain) remain valid for the v1 chain-agnostic capsule format and the v0x01 OP_RETURN anchor format. They lack the `revokedAt` mapping and therefore implement the `¬Revoked` conjunct only implicitly via the `delete leases[...]` side effect inside `revokeLease`. The v0.3.4 contracts above implement the conjunct explicitly per the spec.

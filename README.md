@@ -66,6 +66,15 @@ Closes the three spec-conformance gaps surfaced by the engineering audit of `age
 
 On each EVM chain, a paired `grantLease` → `revokeLease` was issued and `revokedAt(subject, body)` read both before (`0`) and after (a non-zero Unix timestamp), demonstrating the spec's `¬Revoked` conjunct fires independently of the lease's still-future `expiresAt`. Full txid list in [`TESTNET_REPORT_v2.md`](TESTNET_REPORT_v2.md).
 
+### v0.3.4 on Solana (2026-05-23; non-EVM chain-agnostic proof)
+
+The chain-agnostic claim was further exercised on Solana devnet across two surfaces. Source: [`solana-program/`](solana-program/).
+
+- **v0x02 CAAP anchor via Memo program** (Memo v2 enforces UTF-8; wire format is `caap1:` + hex of the canonical 38-byte payload, which decodes byte-for-byte to what Bitcoin OP_RETURN carries): [`kCUwcmdShwrn7j5QSPpsPnxrBYYMZ6LJDxW1JP7tNaVeBj6UdGeRj2JVDuLAyf8wBhLAbwxCe7QyVDWrBoz71fp`](https://explorer.solana.com/tx/kCUwcmdShwrn7j5QSPpsPnxrBYYMZ6LJDxW1JP7tNaVeBj6UdGeRj2JVDuLAyf8wBhLAbwxCe7QyVDWrBoz71fp?cluster=devnet)
+- **`rmem-solana-registry` program** (native Solana, no Anchor framework; mirrors `RmemMemoryRegistry.sol` semantically with PDA-per-(subject,body) lease accounts containing explicit `revoked_at: i64`): [`2BcJ1EYpBrphcTSmbpeaxzWwCZegjBvXPDmbAMoxN7TP`](https://explorer.solana.com/address/2BcJ1EYpBrphcTSmbpeaxzWwCZegjBvXPDmbAMoxN7TP?cluster=devnet)
+
+A paired `grantLease` → `revokeLease` against PDA [`ADEVfKui9y43UN7adcVGk2v7V4LoSNk1chMPaQpehevM`](https://explorer.solana.com/address/ADEVfKui9y43UN7adcVGk2v7V4LoSNk1chMPaQpehevM?cluster=devnet) left `expires_at` at year 2027 while `revoked_at` was set to the block-time Unix timestamp — same `¬Revoked` property demonstrated on a non-EVM chain with a fundamentally different account model.
+
 ## Composition
 
 The Rationale sections of both ERCs detail composition with existing standards. Summary:
