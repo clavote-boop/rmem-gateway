@@ -63,23 +63,22 @@ KEY_LEN = _vault.KEY_LEN
 NONCE_LEN = _vault.NONCE_LEN
 
 
-# ---- Merkle (must match gateway export) ----
+# ---- Tagged-hash helpers (Def. 2 / Def. 4) ----
 
-def merkle_root(leaves: list[str]) -> str:
-    if not leaves:
-        return sha256_hex(b"")
-    level = [
-        bytes.fromhex(h.split(":", 1)[1]) if h.startswith("sha256:") else bytes.fromhex(h)
-        for h in leaves
-    ]
-    while len(level) > 1:
-        if len(level) % 2 == 1:
-            level.append(level[-1])
-        level = [
-            hashlib.sha256(level[i] + level[i + 1]).digest()
-            for i in range(0, len(level), 2)
-        ]
-    return "sha256:" + level[0].hex()
+def _import_hashes():
+    spec_path = Path(__file__).resolve().parent / "rmem_hashes.py"
+    if not spec_path.exists():
+        sys.exit(f"rmem_hashes.py not found at {spec_path}")
+    spec = importlib.util.spec_from_file_location("rmem_hashes", spec_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["rmem_hashes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_hashes = _import_hashes()
+RECOGNIZED_CANON_PROFILES = _hashes.RECOGNIZED_CANON_PROFILES
+CANON_PROFILE_JCS = _hashes.CANON_PROFILE_JCS
 
 
 def _verify_owner_sig(message: str, sig_hex: str, owner_address: str) -> bool:
@@ -131,45 +130,18 @@ def is_frozen(vault: VaultStore, soul_id: str) -> bool:
 
 # ---- verify capsule ----
 
-REQUIRED_MANIFEST_FIELDS_V1 = (
-    "capsule_version", "subject_id", "subject_id_method", "controllers",
-    "created_at", "signature_suite",
-    "record_index", "merkle_root", "owner_signature_message", "owner_signature",
+REQUIRED_MANIFEST_FIELDS = (
+    "capsule_version", "canonProfile", "hashAlg", "soul_id", "controller_pubkeys",
+    "created_at", "sig_scheme", "record_index", "provenance_graph",
+    "merkle_root", "owner_signature_message", "owner_signature",
 )
-
-REQUIRED_MANIFEST_FIELDS_LEGACY = (
-    "capsule_version", "soul_id", "controller_pubkeys", "created_at",
-    "record_index", "merkle_root", "owner_signature_message", "owner_signature",
-)
-
-
-def _normalize_manifest(manifest: dict) -> dict:
-    """Translate a legacy (v0.1, soul_id) manifest into the v1 chain-agnostic shape.
-
-    Mutates a copy; original left intact for diagnostics. Returns the normalized
-    view used by the verifier. Legacy fields are preserved alongside the normalized
-    ones so callers reading either schema continue to work.
-    """
-    if "subject_id" in manifest:
-        return manifest
-    if "soul_id" not in manifest:
-        return manifest
-    norm = dict(manifest)
-    norm["subject_id"] = manifest["soul_id"]
-    norm.setdefault("subject_id_method", "eth-address")
-    pubkeys = manifest.get("controller_pubkeys") or []
-    norm["controllers"] = [
-        {"method": "eth-address", "identifier": pk} for pk in pubkeys
-    ]
-    norm.setdefault("signature_suite", "eip-191-authmsg")
-    return norm
 
 
 def verify_capsule(capsule_dir: Path | str) -> dict:
-    """Verify a capsule's manifest, signature, Merkle root, and every payload hash.
+    """Verify a capsule's manifest, signature, Def. 4 Merkle root, and every
+    payload/chunk hash.
 
-    Accepts both the chain-agnostic v1 schema (subject_id / controllers /
-    signature_suite) and the legacy v0.1 schema (soul_id / controller_pubkeys).
+    Per Def. 1: capsules with absent or unrecognized canonProfile MUST be rejected.
 
     Returns {valid: bool, reasons: [str], manifest: dict|None}.
     """
@@ -178,54 +150,74 @@ def verify_capsule(capsule_dir: Path | str) -> dict:
     if not manifest_path.exists():
         return {"valid": False, "reasons": ["manifest.json not found"], "manifest": None}
     try:
-        raw_manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text())
     except Exception as e:
         return {"valid": False, "reasons": [f"manifest is not valid JSON: {e}"],
                 "manifest": None}
     reasons: list[str] = []
 
-    is_legacy = "subject_id" not in raw_manifest and "soul_id" in raw_manifest
-    required = REQUIRED_MANIFEST_FIELDS_LEGACY if is_legacy else REQUIRED_MANIFEST_FIELDS_V1
-    for fld in required:
-        if fld not in raw_manifest:
+    for fld in REQUIRED_MANIFEST_FIELDS:
+        if fld not in manifest:
             reasons.append(f"missing required manifest field: {fld}")
     if reasons:
-        return {"valid": False, "reasons": reasons, "manifest": raw_manifest}
+        return {"valid": False, "reasons": reasons, "manifest": manifest}
 
-    manifest = _normalize_manifest(raw_manifest)
+    # canonProfile gate (Def. 1).
+    if manifest["canonProfile"] not in RECOGNIZED_CANON_PROFILES:
+        reasons.append(
+            f"unrecognized canonProfile {manifest['canonProfile']!r}; "
+            f"recognized: {sorted(RECOGNIZED_CANON_PROFILES)}"
+        )
+    if manifest["hashAlg"] != "sha256":
+        reasons.append(f"unsupported hashAlg {manifest['hashAlg']!r} (only sha256 supported)")
 
-    suite = manifest.get("signature_suite", "eip-191-authmsg")
-    if suite not in ("eip-191", "eip-191-authmsg"):
-        return {"valid": False,
-                "reasons": [f"unregistered signature_suite: {suite}"],
-                "manifest": raw_manifest}
-
-    # Owner signature recovers to controllers[0].identifier (the active owner).
-    controllers = manifest.get("controllers") or []
-    owner_pk = controllers[0].get("identifier") if controllers else None
+    # Owner signature on the export-authorization message must recover to
+    # controller_pubkeys[0] (the active owner).
+    owner_pk = (manifest["controller_pubkeys"] or [None])[0]
     if not owner_pk:
-        reasons.append("controllers is empty")
+        reasons.append("controller_pubkeys is empty")
     elif not _verify_owner_sig(
         manifest["owner_signature_message"],
         manifest["owner_signature"],
         owner_pk,
     ):
-        reasons.append("owner_signature does not recover to controllers[0].identifier")
+        reasons.append("owner_signature does not recover to controller_pubkeys[0]")
 
-    # Each record's .enc file present + on-disk hash matches manifest entry.
+    # Each record's .enc file must be present, on-disk hash must match the raw
+    # payload_hash, and re-derived tagged chunk_hash must match the manifest entry.
+    chunk_hashes: list[bytes] = []
     for entry in manifest["record_index"]:
         rid = entry["record_id"]
         enc_path = capsule_dir / "records" / f"{rid}.enc"
         if not enc_path.exists():
             reasons.append(f"missing payload file: records/{rid}.enc")
             continue
-        if sha256_hex(enc_path.read_bytes()) != entry["payload_hash"]:
-            reasons.append(f"payload hash mismatch for {rid}")
+        enc_bytes = enc_path.read_bytes()
+        if sha256_hex(enc_bytes) != entry["payload_hash"]:
+            reasons.append(f"payload_hash mismatch for {rid}")
+        recomputed_chunk = _hashes.chunk_hash(enc_bytes)
+        if entry.get("chunk_hash") != "sha256:" + recomputed_chunk.hex():
+            reasons.append(f"chunk_hash mismatch for {rid}")
+        chunk_hashes.append(recomputed_chunk)
 
-    # Merkle root recomputes from record_index payload_hashes.
-    leaves = [e["payload_hash"] for e in manifest["record_index"]]
-    if merkle_root(leaves) != manifest["merkle_root"]:
-        reasons.append("merkle_root does not recompute from record_index")
+    # Merkle root recomputes per Def. 4 from (h_m, chunk_hashes..., H(canon(G_X))).
+    manifest_meta = {
+        "capsule_version": manifest["capsule_version"],
+        "canonProfile":    manifest["canonProfile"],
+        "hashAlg":         manifest["hashAlg"],
+        "soul_id":         manifest["soul_id"],
+        "controller_pubkeys": manifest["controller_pubkeys"],
+        "created_at":      manifest["created_at"],
+        "sig_scheme":      manifest["sig_scheme"],
+    }
+    recomputed_root = "sha256:" + _hashes.capsule_merkle_root(
+        manifest_meta, chunk_hashes, manifest["provenance_graph"],
+    ).hex()
+    if recomputed_root != manifest["merkle_root"]:
+        reasons.append(
+            f"merkle_root does not recompute under Def. 4: "
+            f"got {recomputed_root} vs manifest {manifest['merkle_root']}"
+        )
 
     return {"valid": len(reasons) == 0, "reasons": reasons, "manifest": manifest}
 
@@ -248,8 +240,8 @@ def mount_capsule(
         raise ValueError(f"capsule verification failed: {v['reasons']}")
     if len(old_vault_key) != KEY_LEN or len(new_vault_key) != KEY_LEN:
         raise ValueError(f"vault keys must be {KEY_LEN} bytes")
-    manifest = _normalize_manifest(v["manifest"])
-    soul_id = manifest["subject_id"]
+    manifest = v["manifest"]
+    soul_id = manifest["soul_id"]
     capsule_dir = Path(capsule_dir)
     target = VaultStore(Path(target_vault_root).expanduser())
     if target.db_path.exists():
@@ -348,13 +340,9 @@ def cmd_verify_capsule(args: argparse.Namespace) -> None:
     result = verify_capsule(args.capsule_dir)
     out = {"valid": result["valid"], "reasons": result["reasons"]}
     if result["manifest"]:
-        manifest = _normalize_manifest(result["manifest"])
-        out["subject_id"] = manifest["subject_id"]
-        out["subject_id_method"] = manifest.get("subject_id_method", "eth-address")
-        out["signature_suite"] = manifest.get("signature_suite", "eip-191-authmsg")
-        out["capsule_version"] = manifest.get("capsule_version", "0.1")
-        out["record_count"] = len(manifest["record_index"])
-        out["merkle_root"] = manifest["merkle_root"]
+        out["soul_id"] = result["manifest"]["soul_id"]
+        out["record_count"] = len(result["manifest"]["record_index"])
+        out["merkle_root"] = result["manifest"]["merkle_root"]
     print(json.dumps(out, indent=2))
     if not result["valid"]:
         sys.exit(1)
@@ -397,34 +385,42 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         )
         rid = put["record_id"]
 
-        # Hand-build a capsule that matches rmem-gateway.py's exportMemory output.
+        # Hand-build a Def. 4 capsule that matches rmem-gateway.py's exportMemory output.
         records = src.list_records(soul_id=soul, include_tombstoned=False)
         capsule = tmp / "capsule"
         (capsule / "records").mkdir(parents=True)
         rec_idx = []
+        chunk_hs: list[bytes] = []
         for r in records:
-            shutil.copyfile(
-                src.root / "records" / f"{r['record_id']}.enc",
-                capsule / "records" / f"{r['record_id']}.enc",
-            )
+            dst_enc = capsule / "records" / f"{r['record_id']}.enc"
+            shutil.copyfile(src.root / "records" / f"{r['record_id']}.enc", dst_enc)
+            ch = _hashes.chunk_hash(dst_enc.read_bytes())
+            chunk_hs.append(ch)
             rec_idx.append({
                 "record_id": r["record_id"], "payload_hash": r["payload_hash"],
+                "chunk_hash": "sha256:" + ch.hex(),
                 "layer": r["layer"], "type": r["type"],
             })
-        mroot = merkle_root([e["payload_hash"] for e in rec_idx])
+        provenance_graph = {"vertices": [e["record_id"] for e in rec_idx], "edges": []}
+        meta = {
+            "capsule_version": "0.2",
+            "canonProfile":    CANON_PROFILE_JCS,
+            "hashAlg":         "sha256",
+            "soul_id":         soul,
+            "controller_pubkeys": [owner.address],
+            "created_at":      now_iso(),
+            "sig_scheme":      "eip191",
+        }
+        mroot = "sha256:" + _hashes.capsule_merkle_root(meta, chunk_hs, provenance_graph).hex()
         export_msg = canon_json({
             "op": "exportMemory", "subject": soul,
             "nonce": secrets.token_hex(8), "expires_at": "2099-01-01T00:00:00Z",
         })
         export_sig = owner.sign_message(encode_defunct(text=export_msg)).signature.hex()
         manifest = {
-            "capsule_version": "1",
-            "subject_id": soul,
-            "subject_id_method": "eth-address",
-            "controllers": [{"method": "eth-address", "identifier": owner.address}],
-            "created_at": now_iso(),
-            "signature_suite": "eip-191-authmsg",
+            **meta,
             "record_index": rec_idx,
+            "provenance_graph": provenance_graph,
             "merkle_root": mroot,
             "owner_signature_message": export_msg,
             "owner_signature": export_sig,
@@ -453,6 +449,29 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         if v_forge["valid"]:
             failures.append("forged owner_signature was accepted")
         # restore good manifest
+        (capsule / "manifest.json").write_text(canon_json(manifest))
+
+        # --- canonProfile gate (Def. 1): missing or unrecognized must be rejected ---
+        man = json.loads((capsule / "manifest.json").read_text())
+        del man["canonProfile"]
+        (capsule / "manifest.json").write_text(canon_json(man))
+        v_no_profile = verify_capsule(capsule)
+        if v_no_profile["valid"]:
+            failures.append("missing canonProfile was accepted")
+        man["canonProfile"] = "homebrew-v9"
+        (capsule / "manifest.json").write_text(canon_json(man))
+        v_bad_profile = verify_capsule(capsule)
+        if v_bad_profile["valid"]:
+            failures.append("unrecognized canonProfile was accepted")
+        (capsule / "manifest.json").write_text(canon_json(manifest))
+
+        # --- Merkle gate (Def. 4): swapped chunk_hash leaf must be rejected ---
+        man = json.loads((capsule / "manifest.json").read_text())
+        man["record_index"][0]["chunk_hash"] = "sha256:" + "00" * 32
+        (capsule / "manifest.json").write_text(canon_json(man))
+        v_bad_chunk = verify_capsule(capsule)
+        if v_bad_chunk["valid"]:
+            failures.append("tampered chunk_hash was accepted")
         (capsule / "manifest.json").write_text(canon_json(manifest))
 
         # --- mount ---

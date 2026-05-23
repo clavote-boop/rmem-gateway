@@ -149,6 +149,49 @@ contract RmemMemoryRegistryTest is Test {
         reg.writeMemory(subject, RID_1, PAYLOAD);
     }
 
+    function test_revocation_sets_explicit_timestamp_independent_of_expiry() public {
+        // Lease with a far-future expiresAt so WithinTime cannot mask revocation.
+        uint64 farFuture = uint64(block.timestamp + 365 days);
+        vm.prank(subject);
+        reg.grantLease(body, SCOPE_WRITE, farFuture);
+
+        // Pre-revoke: revokedAt is 0; writeMemory works.
+        assertEq(reg.revokedAt(subject, body), 0, "revokedAt should start 0");
+        vm.prank(body);
+        reg.writeMemory(subject, RID_1, PAYLOAD);
+
+        // Revoke: explicit timestamp is recorded.
+        uint64 t = uint64(block.timestamp);
+        vm.prank(subject);
+        reg.revokeLease(body);
+        assertEq(reg.revokedAt(subject, body), t,
+                 "revokedAt should equal block.timestamp at revoke");
+
+        // Post-revoke: still well within the original time window, but ¬Revoked
+        // fires the auth failure independently.
+        vm.prank(body);
+        vm.expectRevert();
+        reg.writeMemory(subject, RID_2, PAYLOAD);
+    }
+
+    function test_regrant_clears_prior_revocation() public {
+        vm.prank(subject);
+        reg.grantLease(body, SCOPE_WRITE, uint64(block.timestamp + 1 hours));
+        vm.prank(subject);
+        reg.revokeLease(body);
+        assertGt(reg.revokedAt(subject, body), 0, "revokedAt should be set after revoke");
+
+        // Re-grant must clear the revocation timestamp so the new lease is valid.
+        vm.prank(subject);
+        reg.grantLease(body, SCOPE_WRITE, uint64(block.timestamp + 1 hours));
+        assertEq(reg.revokedAt(subject, body), 0,
+                 "grantLease should clear prior revokedAt");
+
+        vm.prank(body);
+        reg.writeMemory(subject, RID_1, PAYLOAD);
+        assertEq(reg.commitmentOf(subject, RID_1), keccak256(PAYLOAD));
+    }
+
     function test_grant_lease_invalid_inputs_revert() public {
         vm.startPrank(subject);
         vm.expectRevert();

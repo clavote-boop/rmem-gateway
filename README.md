@@ -43,17 +43,28 @@ All five should print `selftest: OK`. The tests cover happy path, tamper detecti
 | B | `rmem-gateway.py` — four ERC-8264 ops + capsule export + EIP-712 | shipped, selftest |
 | C | `rmem-lease.py` + gateway lease auth + `rmem-migrate.py` | shipped, selftest |
 | D | `rmem-anchor.py` — OP_RETURN anchoring (signet / mutinynet / testnet) | shipped, live-verified |
-| **D-EVM** | `rmem-evm.py` + `contracts/RmemMemoryRegistry.sol` — EVM ops + `MemoryAnchored` event anchoring | shipped, 19/19 Foundry tests, **deployed on Sepolia + Base Sepolia + BNB Testnet** |
+| **D-EVM** | `rmem-evm.py` + `contracts/RmemMemoryRegistry.sol` — EVM ops + `MemoryAnchored` event anchoring | shipped, **21/21 Foundry tests** (v0.3.4), **deployed on Sepolia + Base Sepolia + BNB Testnet** (both v0.1 and v0.3.4) |
 | E | Mainnet anchoring via local Bitcoin node | not in v0.1; gated on independent on-chain proof from D |
 
-Live anchors verified 2026-05-22:
+### v0.1 anchors (2026-05-22; bare-root format)
 
-- Bitcoin mutinynet (OP_RETURN): [`224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a`](https://mutinynet.com/tx/224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a)
-- Ethereum Sepolia (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.etherscan.io/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
-- Base Sepolia (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.basescan.org/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
-- BNB Smart Chain Testnet (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://testnet.bscscan.com/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
+- Bitcoin mutinynet (OP_RETURN v0x01): [`224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a`](https://mutinynet.com/tx/224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a)
+- Ethereum Sepolia (`RmemMemoryRegistry` v0.1): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.etherscan.io/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
+- Base Sepolia (`RmemMemoryRegistry` v0.1): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.basescan.org/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
+- BNB Smart Chain Testnet (`RmemMemoryRegistry` v0.1): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://testnet.bscscan.com/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
 
-All three EVM deployments are at the same address — deterministic from deployer EOA + nonce 0 — and each passes `supportsInterface(0x13a642d4)` (ERC-8264) and `supportsInterface(0x01ffc9a7)` (ERC-165).
+All v0.1 EVM deployments are at the same address — deterministic from deployer EOA + nonce 0 — and each passes `supportsInterface(0x13a642d4)` (ERC-8264) and `supportsInterface(0x01ffc9a7)` (ERC-165).
+
+### v0.3.4 anchors (2026-05-23; Def. 4 Merkle + tagged-digest format)
+
+Closes the three spec-conformance gaps surfaced by the engineering audit of `agent_memory_rights_v0_3_4`: `canonProfile` enforced, explicit `revokedAt` mapping on both layers, Def. 4 Merkle with full Table 1 domain-separation tags. Full audit + on-chain evidence in [`TESTNET_REPORT_v2.md`](TESTNET_REPORT_v2.md).
+
+- Bitcoin mutinynet (OP_RETURN v0x02; tagged `H(CAAP_ANCHOR || R_X || "bitcoin-mutinynet")`): [`0e595f6786d4ad8f0f87fc112732d68a40003cb7ddd0997de50a27f46f334c5a`](https://mutinynet.com/tx/0e595f6786d4ad8f0f87fc112732d68a40003cb7ddd0997de50a27f46f334c5a)
+- Ethereum Sepolia (`RmemMemoryRegistry` v0.3.4 with `revokedAt`): [`0x31dc2367b3aa512a5e58a2e116fd956276723405`](https://sepolia.etherscan.io/address/0x31dc2367b3aa512a5e58a2e116fd956276723405)
+- Base Sepolia (`RmemMemoryRegistry` v0.3.4 with `revokedAt`): [`0xe03a97717ab166c555da4bb9f09e719135e521b8`](https://sepolia.basescan.org/address/0xe03a97717ab166c555da4bb9f09e719135e521b8)
+- BNB Smart Chain Testnet (`RmemMemoryRegistry` v0.3.4 with `revokedAt`): [`0xe03a97717ab166c555da4bb9f09e719135e521b8`](https://testnet.bscscan.com/address/0xe03a97717ab166c555da4bb9f09e719135e521b8)
+
+On each EVM chain, a paired `grantLease` → `revokeLease` was issued and `revokedAt(subject, body)` read both before (`0`) and after (a non-zero Unix timestamp), demonstrating the spec's `¬Revoked` conjunct fires independently of the lease's still-future `expiresAt`. Full txid list in [`TESTNET_REPORT_v2.md`](TESTNET_REPORT_v2.md).
 
 ## Composition
 

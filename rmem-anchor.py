@@ -64,38 +64,80 @@ sha256_hex = _vault.sha256_hex
 now_iso = _vault.now_iso
 
 
-# ---- CAAP OP_RETURN payload format ----
+# ---- Tagged-hash helpers (Def. 2 / Def. 4 / Eq. anchor) ----
 
+def _import_hashes():
+    spec_path = Path(__file__).resolve().parent / "rmem_hashes.py"
+    if not spec_path.exists():
+        sys.exit(f"rmem_hashes.py not found at {spec_path}")
+    spec = importlib.util.spec_from_file_location("rmem_hashes", spec_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["rmem_hashes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_hashes = _import_hashes()
+
+
+# ---- CAAP OP_RETURN payload format ----
+#
+# v2 (Eq. anchor): the 32-byte field carries H(CAAP_ANCHOR || R_X || domain),
+# not the bare R_X. Domain-separating the anchor digest prevents replay of the
+# same root across protocols or chains. Verification recomputes the tagged
+# digest from the locally-stored (R_X, domain) pair and compares to the
+# on-chain bytes.
 CAAP_MAGIC = b"CAAP"
-ANCHOR_VERSION = 0x01
+ANCHOR_VERSION = 0x02
 COMMIT_CAPSULE_ROOT = 0x01
 COMMIT_MEMORY_ROOT = 0x02
 PAYLOAD_LEN = 4 + 1 + 1 + 32  # 38 bytes
 MAX_OP_RETURN = 80
 
+# Per-network domain string mixed into the anchor digest.
+NETWORK_DOMAIN = {
+    "signet":    "bitcoin-signet",
+    "testnet":   "bitcoin-testnet",
+    "mainnet":   "bitcoin-mainnet",
+    "mutinynet": "bitcoin-mutinynet",
+}
 
-def build_caap_payload(merkle_root_hex: str, commit_type: int) -> bytes:
-    if commit_type not in (COMMIT_CAPSULE_ROOT, COMMIT_MEMORY_ROOT):
-        raise ValueError(f"invalid commit_type {commit_type}")
+
+def _normalize_root_bytes(merkle_root_hex: str) -> bytes:
     root = merkle_root_hex.split(":", 1)[1] if merkle_root_hex.startswith("sha256:") \
         else merkle_root_hex
     root_bytes = bytes.fromhex(root)
     if len(root_bytes) != 32:
         raise ValueError(f"merkle root must be 32 bytes, got {len(root_bytes)}")
-    payload = CAAP_MAGIC + bytes([ANCHOR_VERSION, commit_type]) + root_bytes
+    return root_bytes
+
+
+def build_caap_payload(merkle_root_hex: str, commit_type: int, *, domain: str) -> bytes:
+    if commit_type not in (COMMIT_CAPSULE_ROOT, COMMIT_MEMORY_ROOT):
+        raise ValueError(f"invalid commit_type {commit_type}")
+    if not domain:
+        raise ValueError("domain is required for v2 anchor payload")
+    root_bytes = _normalize_root_bytes(merkle_root_hex)
+    digest = _hashes.anchor_digest(root_bytes, domain)
+    payload = CAAP_MAGIC + bytes([ANCHOR_VERSION, commit_type]) + digest
     assert len(payload) == PAYLOAD_LEN, f"payload length {len(payload)} != {PAYLOAD_LEN}"
     assert len(payload) <= MAX_OP_RETURN
     return payload
 
 
 def parse_caap_payload(payload: bytes) -> dict:
+    """Returns the on-chain fields. The 32-byte field is the anchor digest
+    (H(CAAP_ANCHOR || R_X || domain)); R_X cannot be recovered from it without
+    the locally-stored (root, domain) pair. Use verify_anchor_digest() to
+    confirm a candidate (root, domain) produces a matching digest.
+    """
     if len(payload) < PAYLOAD_LEN:
         return {"valid": False, "reason": f"too short ({len(payload)} bytes)"}
     if payload[:4] != CAAP_MAGIC:
         return {"valid": False, "reason": "magic mismatch"}
     version = payload[4]
     commit_type = payload[5]
-    root = payload[6:6 + 32]
+    digest = payload[6:6 + 32]
     if version != ANCHOR_VERSION:
         return {"valid": False, "reason": f"unsupported version {version}"}
     if commit_type not in (COMMIT_CAPSULE_ROOT, COMMIT_MEMORY_ROOT):
@@ -105,8 +147,15 @@ def parse_caap_payload(payload: bytes) -> dict:
         "version": version,
         "commit_type": commit_type,
         "commit_type_name": "capsule_root" if commit_type == COMMIT_CAPSULE_ROOT else "memory_root",
-        "merkle_root": "sha256:" + root.hex(),
+        "anchor_digest": "sha256:" + digest.hex(),
     }
+
+
+def verify_anchor_digest(payload_digest_bytes: bytes, merkle_root_hex: str,
+                         domain: str) -> bool:
+    """True iff payload_digest_bytes == H(CAAP_ANCHOR || R_X || domain)."""
+    root_bytes = _normalize_root_bytes(merkle_root_hex)
+    return _hashes.anchor_digest(root_bytes, domain) == payload_digest_bytes
 
 
 def extract_op_return_from_tx(tx: Transaction) -> Optional[bytes]:
@@ -126,29 +175,22 @@ def extract_op_return_from_tx(tx: Transaction) -> Optional[bytes]:
     return None
 
 
-# ---- Merkle root over a list of sha256 hex strings ----
-
-def merkle_root(leaves: list[str]) -> str:
-    if not leaves:
-        return sha256_hex(b"")
-    level = [
-        bytes.fromhex(h.split(":", 1)[1]) if h.startswith("sha256:") else bytes.fromhex(h)
-        for h in leaves
-    ]
-    while len(level) > 1:
-        if len(level) % 2 == 1:
-            level.append(level[-1])
-        level = [
-            hashlib.sha256(level[i] + level[i + 1]).digest()
-            for i in range(0, len(level), 2)
-        ]
-    return "sha256:" + level[0].hex()
-
+# ---- Memory-state Merkle root (Def. 4 leaf/internal prefixes, tagged chunks) ----
 
 def compute_memory_root(vault: VaultStore, soul_id: str) -> str:
+    """Memory-state root R_X over the subject's live (non-tombstoned) records.
+
+    Each leaf is a tagged chunk hash H(CAPSULE_CHUNK || chunk_bytes), then the
+    Merkle tree applies Def. 4 leaf/internal prefixes (0x00 / 0x01) with
+    right-duplicate padding. The subject's manifest hash and provenance graph
+    are not leaves here — this is a live-state root, not a capsule root.
+    """
     rows = vault.list_records(soul_id=soul_id, include_tombstoned=False)
-    leaves = [r["payload_hash"] for r in rows]
-    return merkle_root(leaves)
+    chunk_hashes: list[bytes] = []
+    for r in rows:
+        enc_path = vault.root / "records" / f"{r['record_id']}.enc"
+        chunk_hashes.append(_hashes.chunk_hash(enc_path.read_bytes()))
+    return _hashes.merkle_root_v2_hex(chunk_hashes)
 
 
 # ---- anchors table (lazy create in vault.db) ----
@@ -162,6 +204,7 @@ CREATE TABLE IF NOT EXISTS anchors (
   payload_hex  TEXT NOT NULL,
   commit_type  TEXT NOT NULL,
   merkle_root  TEXT NOT NULL,
+  domain       TEXT NOT NULL DEFAULT '',
   soul_id      TEXT,
   broadcast_at TEXT NOT NULL,
   verified_at  TEXT,
@@ -172,12 +215,21 @@ CREATE INDEX IF NOT EXISTS idx_anchors_network ON anchors(network);
 CREATE INDEX IF NOT EXISTS idx_anchors_soul    ON anchors(soul_id);
 """
 
+# Schema migrations: add `domain` column to pre-v2 anchor tables.
+_ANCHORS_MIGRATIONS = [
+    "ALTER TABLE anchors ADD COLUMN domain TEXT NOT NULL DEFAULT ''",
+]
+
 
 def ensure_anchors_table(vault: VaultStore) -> None:
     conn = vault.connect()
     try:
         with conn:
             conn.executescript(ANCHORS_SCHEMA)
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(anchors)")}
+            for stmt in _ANCHORS_MIGRATIONS:
+                if "domain" in stmt and "domain" not in cols:
+                    conn.execute(stmt)
     finally:
         conn.close()
 
@@ -185,7 +237,7 @@ def ensure_anchors_table(vault: VaultStore) -> None:
 def record_anchor(
     vault: VaultStore, *,
     network: str, txid: str, payload: bytes, commit_type: int,
-    merkle_root_hex: str, soul_id: Optional[str],
+    merkle_root_hex: str, domain: str, soul_id: Optional[str],
 ) -> str:
     ensure_anchors_table(vault)
     anchor_id = f"anchor_{int(datetime.now(timezone.utc).timestamp() * 1000):013d}_{secrets.token_hex(4)}"
@@ -194,16 +246,16 @@ def record_anchor(
         with conn:
             conn.execute(
                 "INSERT INTO anchors (anchor_id, network, txid, vout_index, payload_hex, "
-                "commit_type, merkle_root, soul_id, broadcast_at, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "commit_type, merkle_root, domain, soul_id, broadcast_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (anchor_id, network, txid, 0, payload.hex(),
                  "capsule_root" if commit_type == COMMIT_CAPSULE_ROOT else "memory_root",
-                 merkle_root_hex, soul_id, now_iso(), "broadcast"),
+                 merkle_root_hex, domain, soul_id, now_iso(), "broadcast"),
             )
             vault._append_audit(
                 conn, "anchor.broadcast", soul_id, None,
                 {"anchor_id": anchor_id, "network": network, "txid": txid,
-                 "merkle_root": merkle_root_hex},
+                 "merkle_root": merkle_root_hex, "domain": domain},
             )
     finally:
         conn.close()
@@ -404,8 +456,11 @@ def broadcast_via_knots_rpc(
 
 # ---- verification ----
 
-def verify_anchor_onchain(txid: str, expected_root_hex: str, network: str) -> dict:
-    """Re-fetch a tx from the chain, parse its OP_RETURN, compare to expected root."""
+def verify_anchor_onchain(txid: str, expected_root_hex: str, network: str,
+                          domain: str) -> dict:
+    """Re-fetch a tx from chain, parse its OP_RETURN, and confirm the on-chain
+    32-byte anchor digest matches H(CAAP_ANCHOR || expected_root || domain).
+    """
     tx_data = fetch_tx(txid, network)
     op_return_payload = None
     for vout in tx_data.get("vout", []):
@@ -421,14 +476,15 @@ def verify_anchor_onchain(txid: str, expected_root_hex: str, network: str) -> di
     parsed = parse_caap_payload(op_return_payload)
     if not parsed["valid"]:
         return {"verified": False, "reason": parsed["reason"]}
-    expected = expected_root_hex if expected_root_hex.startswith("sha256:") \
-        else "sha256:" + expected_root_hex
-    if parsed["merkle_root"] != expected:
-        return {"verified": False, "reason": "merkle root mismatch",
-                "onchain": parsed["merkle_root"], "expected": expected}
+    onchain_digest = bytes.fromhex(parsed["anchor_digest"].split(":", 1)[1])
+    if not verify_anchor_digest(onchain_digest, expected_root_hex, domain):
+        return {"verified": False, "reason": "anchor digest mismatch",
+                "onchain_digest": parsed["anchor_digest"],
+                "expected_root": expected_root_hex, "domain": domain}
     return {
         "verified": True,
-        "merkle_root": parsed["merkle_root"],
+        "merkle_root": expected_root_hex,
+        "domain": domain,
         "commit_type": parsed["commit_type_name"],
         "block_height": tx_data.get("status", {}).get("block_height"),
     }
@@ -455,7 +511,8 @@ def cmd_anchor_memory(args: argparse.Namespace) -> None:
     wif = _load_anchor_key(args.anchor_key)
     anchor_addr = derive_p2wpkh_address(wif, args.network)
     root = compute_memory_root(vault, args.soul)
-    payload = build_caap_payload(root, COMMIT_MEMORY_ROOT)
+    domain = NETWORK_DOMAIN[args.network]
+    payload = build_caap_payload(root, COMMIT_MEMORY_ROOT, domain=domain)
     utxos = fetch_utxos(anchor_addr, args.network)
     if not utxos:
         sys.exit(f"no UTXOs at {anchor_addr} on {args.network}; fund the address first")
@@ -463,7 +520,8 @@ def cmd_anchor_memory(args: argparse.Namespace) -> None:
     tx_hex = sign_anchor_tx(tx, wif, utxos, args.network)
     if args.dry_run:
         print(json.dumps({"dry_run": True, "anchor_address": anchor_addr,
-                          "merkle_root": root, "payload_hex": payload.hex(),
+                          "merkle_root": root, "domain": domain,
+                          "payload_hex": payload.hex(),
                           "tx_hex": tx_hex, "tx_size": len(tx_hex) // 2,
                           "broadcast_via": args.broadcast_via}, indent=2))
         return
@@ -480,11 +538,12 @@ def cmd_anchor_memory(args: argparse.Namespace) -> None:
         txid = broadcast_tx(tx_hex, args.network)
     anchor_id = record_anchor(
         vault, network=args.network, txid=txid, payload=payload,
-        commit_type=COMMIT_MEMORY_ROOT, merkle_root_hex=root, soul_id=args.soul,
+        commit_type=COMMIT_MEMORY_ROOT, merkle_root_hex=root,
+        domain=domain, soul_id=args.soul,
     )
     print(json.dumps({"anchor_id": anchor_id, "txid": txid, "network": args.network,
                       "broadcast_via": args.broadcast_via,
-                      "merkle_root": root}, indent=2))
+                      "merkle_root": root, "domain": domain}, indent=2))
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
@@ -499,7 +558,12 @@ def cmd_verify(args: argparse.Namespace) -> None:
         conn.close()
     if not row:
         sys.exit(f"anchor {args.anchor} not found")
-    result = verify_anchor_onchain(row["txid"], row["merkle_root"], row["network"])
+    if not row["domain"]:
+        sys.exit(f"anchor {args.anchor} predates v2 (no domain); cannot verify against "
+                 "tagged CAAP_ANCHOR digest")
+    result = verify_anchor_onchain(
+        row["txid"], row["merkle_root"], row["network"], row["domain"],
+    )
     if result["verified"]:
         mark_anchor_verified(vault, args.anchor, result.get("block_height"))
     print(json.dumps(result, indent=2))
@@ -550,14 +614,23 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         if len(expected_root_bytes) != 32:
             failures.append("memory root is not 32 bytes")
 
-        # --- build CAAP payload ---
-        payload = build_caap_payload(root, COMMIT_MEMORY_ROOT)
+        # --- build CAAP payload (v2: tagged CAAP_ANCHOR digest, domain-bound) ---
+        test_domain = NETWORK_DOMAIN["signet"]
+        payload = build_caap_payload(root, COMMIT_MEMORY_ROOT, domain=test_domain)
         if len(payload) != PAYLOAD_LEN:
             failures.append(f"payload length {len(payload)} != {PAYLOAD_LEN}")
         if payload[:4] != CAAP_MAGIC:
             failures.append("payload missing CAAP magic")
         if payload[4] != ANCHOR_VERSION or payload[5] != COMMIT_MEMORY_ROOT:
             failures.append("payload version/type bytes wrong")
+        # The 32-byte digest field must be the tagged anchor digest, NOT the bare root.
+        if payload[6:] == expected_root_bytes:
+            failures.append("payload carries bare merkle root instead of tagged digest")
+        if not verify_anchor_digest(payload[6:], root, test_domain):
+            failures.append("payload digest does not match H(CAAP_ANCHOR || R_X || domain)")
+        # Cross-domain replay: same root + different domain must NOT verify.
+        if verify_anchor_digest(payload[6:], root, NETWORK_DOMAIN["mainnet"]):
+            failures.append("anchor digest verified against WRONG domain (no separation)")
 
         # --- generate test signet keypair ---
         priv_bytes = secrets.token_bytes(32)
@@ -600,16 +673,20 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         parsed_payload = parse_caap_payload(extracted) if extracted else {"valid": False}
         if not parsed_payload.get("valid"):
             failures.append(f"parse_caap_payload failed: {parsed_payload.get('reason')}")
-        elif parsed_payload["merkle_root"] != root:
-            failures.append("round-tripped merkle root does not match")
         elif parsed_payload["commit_type"] != COMMIT_MEMORY_ROOT:
             failures.append("round-tripped commit_type does not match")
+        else:
+            # v2: we get the tagged digest, not the bare root. Confirm it
+            # matches when we supply the right (root, domain) pair.
+            digest_bytes = bytes.fromhex(parsed_payload["anchor_digest"].split(":", 1)[1])
+            if not verify_anchor_digest(digest_bytes, root, test_domain):
+                failures.append("round-tripped digest does not verify against (root, domain)")
 
         # --- anchor record storage ---
         anchor_id = record_anchor(
             vault, network="signet", txid="ab" * 32, payload=payload,
             commit_type=COMMIT_MEMORY_ROOT, merkle_root_hex=root,
-            soul_id="did:btc:testsoul",
+            domain=test_domain, soul_id="did:btc:testsoul",
         )
         ensure_anchors_table(vault)
         conn = vault.connect()
@@ -634,7 +711,8 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         bad = parse_caap_payload(b"NOTCAAP" + b"\x00" * 31)
         if bad["valid"]:
             failures.append("parse_caap_payload accepted bogus magic")
-        bad2 = parse_caap_payload(b"CAAP" + bytes([0x02, COMMIT_CAPSULE_ROOT]) + b"\x00" * 32)
+        # Version != ANCHOR_VERSION (use a value that is neither old 0x01 nor 0x02).
+        bad2 = parse_caap_payload(b"CAAP" + bytes([0x09, COMMIT_CAPSULE_ROOT]) + b"\x00" * 32)
         if bad2["valid"]:
             failures.append("parse_caap_payload accepted unsupported version")
 

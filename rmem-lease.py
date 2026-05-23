@@ -58,6 +58,22 @@ canon_json = _vault.canon_json
 now_iso = _vault.now_iso
 
 
+# ---- Tagged-hash helpers (Eq. cosign) ----
+
+def _import_hashes():
+    spec_path = Path(__file__).resolve().parent / "rmem_hashes.py"
+    if not spec_path.exists():
+        sys.exit(f"rmem_hashes.py not found at {spec_path}")
+    spec = importlib.util.spec_from_file_location("rmem_hashes", spec_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["rmem_hashes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_hashes = _import_hashes()
+
+
 # ---- defaults ----
 
 DEFAULT_SCOPES = {
@@ -193,20 +209,57 @@ def lease_authorizes_op(
             "requires_owner_cosign": requires_cosign}
 
 
+def is_lease_revoked(lease: dict, vault: Optional[VaultStore] = None) -> bool:
+    """Per Def. 1 / Eq. lease-revoke: revocation is an INDEPENDENT conjunct
+    from WithinTime; explicit revocation overrides a still-valid time window.
+
+    Two sources are consulted (either is sufficient):
+      1. Lease dict's `_status` field (populated by load_lease()).
+      2. A live vault lookup by lease_id (if vault is supplied).
+    """
+    if lease.get("_status") == "revoked":
+        return True
+    if vault is not None and "lease_id" in lease:
+        ensure_leases_table(vault)
+        conn = vault.connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM leases WHERE lease_id = ?",
+                (lease["lease_id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is not None and row["status"] == "revoked":
+            return True
+    return False
+
+
 def verify_body_signed_request(
     lease: dict, message: str, body_signature: str,
     now: Optional[datetime] = None,
+    vault: Optional[VaultStore] = None,
 ) -> dict:
     """Verify a body-signed request against a lease.
 
-    Checks: lease signature valid, lease not expired, message subject matches
-    lease.subject, body signature recovers to lease.body_address.
+    Conjuncts (all must hold; per Eqs. lease-sig/-time/-revoke/-scope/-cond, the
+    spec treats revocation as INDEPENDENT of WithinTime):
+      1. Lease owner_signature recovers to lease.subject.
+      2. WithinTime: lease not expired.
+      3. ¬Revoked: lease has not been explicitly revoked.
+      4. message subject matches lease.subject.
+      5. body_signature recovers to lease.body_address.
+
+    If `vault` is supplied, revocation is also checked against the persisted
+    lease record so a body holding a stale lease JSON cannot bypass revocation.
+
     Returns {valid: bool, reason: str|None}.
     """
     if not verify_lease_signature(lease):
         return {"valid": False, "reason": "lease owner_signature invalid"}
     if is_lease_expired(lease, now):
         return {"valid": False, "reason": "lease expired"}
+    if is_lease_revoked(lease, vault):
+        return {"valid": False, "reason": "lease revoked"}
     try:
         msg = json.loads(message)
     except Exception:
@@ -223,6 +276,35 @@ def verify_body_signed_request(
         return {"valid": False,
                 "reason": "body signature does not match lease.body_address"}
     return {"valid": True, "reason": None}
+
+
+def verify_body_action_cosign(
+    action: dict, owner_cosignature: str, subject_address: str,
+) -> bool:
+    """Eq. cosign: the subject must sign the BODY_ACTION-tagged digest of the
+    canonical action. Returns True iff the cosignature recovers to subject.
+
+    The action dict is canonicalized via JCS and then domain-separated under
+    the BODY_ACTION tag before hashing. The subject's EIP-191 signature over
+    that 32-byte digest authorises the body to perform the action.
+    """
+    action_canon = canon_json(action).encode("utf-8")
+    digest = _hashes.body_action_digest(action_canon)
+    try:
+        recovered = Account.recover_message(
+            encode_defunct(primitive=digest), signature=owner_cosignature,
+        )
+    except Exception:
+        return False
+    return recovered.lower() == subject_address.lower()
+
+
+def sign_body_action(action: dict, subject_account: Account) -> str:
+    """Helper: subject produces a cosignature over the BODY_ACTION digest of `action`."""
+    action_canon = canon_json(action).encode("utf-8")
+    digest = _hashes.body_action_digest(action_canon)
+    sig_hex = subject_account.sign_message(encode_defunct(primitive=digest)).signature.hex()
+    return sig_hex if sig_hex.startswith("0x") else "0x" + sig_hex
 
 
 # ---- leases table (lazy create in vault.db) ----
@@ -561,6 +643,55 @@ def cmd_selftest(args: argparse.Namespace) -> None:
             failures.append("second revoke should have failed")
         except ValueError:
             pass
+
+        # --- ¬Revoked is an INDEPENDENT conjunct from WithinTime ---
+        # A body holding the original (pre-revoke) lease JSON should be rejected
+        # when verify_body_signed_request consults the vault, even though the
+        # lease is still inside its time window.
+        body_msg_post_revoke = canon_json({
+            "op": "readMemory", "subject": owner.address,
+            "lease_id": lid, "record_id": "mem_test",
+            "nonce": secrets.token_hex(8),
+            "expires_at": _iso_fmt(datetime.now(timezone.utc) + timedelta(hours=1)),
+        })
+        body_sig_post_revoke = body.sign_message(
+            encode_defunct(text=body_msg_post_revoke)).signature.hex()
+        # Without vault lookup, the stale dict has no _status and falsely "passes".
+        # That's the v0.3.3 vulnerability the spec calls out.
+        stale_lease = {k: v for k, v in lease.items() if not k.startswith("_")}
+        without_vault = verify_body_signed_request(
+            stale_lease, body_msg_post_revoke, body_sig_post_revoke,
+        )
+        if not without_vault["valid"]:
+            failures.append(
+                "stale lease without vault check unexpectedly failed for non-revocation "
+                f"reason: {without_vault['reason']}"
+            )
+        with_vault = verify_body_signed_request(
+            stale_lease, body_msg_post_revoke, body_sig_post_revoke, vault=vault,
+        )
+        if with_vault["valid"]:
+            failures.append("vault revocation lookup did NOT reject stale lease")
+        elif with_vault["reason"] != "lease revoked":
+            failures.append(f"vault path failed for wrong reason: {with_vault['reason']!r}")
+        # is_lease_revoked direct API
+        if not is_lease_revoked(stale_lease, vault):
+            failures.append("is_lease_revoked(vault) returned False for revoked lease")
+
+        # --- BODY_ACTION cosign (Eq. cosign) ---
+        action = {"op": "writeMemory", "subject": owner.address,
+                  "record_id": "mem_cosign_test", "layer": "L3_canonical"}
+        cosig = sign_body_action(action, owner)
+        if not verify_body_action_cosign(action, cosig, owner.address):
+            failures.append("BODY_ACTION cosign roundtrip failed")
+        # Wrong signer rejected
+        cosig_wrong = sign_body_action(action, wrong_body)
+        if verify_body_action_cosign(action, cosig_wrong, owner.address):
+            failures.append("BODY_ACTION cosign accepted wrong signer")
+        # Tampered action rejected
+        tampered_action = {**action, "layer": "L1_session"}
+        if verify_body_action_cosign(tampered_action, cosig, owner.address):
+            failures.append("BODY_ACTION cosign accepted tampered action")
 
         # --- revoke by wrong key fails ---
         unsigned2 = build_lease_unsigned(

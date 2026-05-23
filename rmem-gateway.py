@@ -6,7 +6,7 @@ exportMemory) on top of the Phase A vault. The gateway holds no signing key — 
 mutating operation requires an EIP-191 owner signature verified against the subject's
 Ethereum address (derived from the same secp256k1 key as the Soul ID).
 
-See SPEC_v0.1.md.
+See product/caas/rmem-gateway/SPEC_v0.1.md.
 
 Security invariants (do not violate):
 - The gateway never holds a private key. Owner signs externally; gateway verifies.
@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import secrets
 import shutil
 import sys
@@ -30,7 +31,7 @@ from typing import Any, Optional
 
 try:
     from eth_account import Account
-    from eth_account.messages import encode_defunct
+    from eth_account.messages import encode_defunct, encode_typed_data
 except ImportError:
     sys.exit("rmem-gateway requires 'eth-account'. pip install eth-account")
 
@@ -81,6 +82,25 @@ lease_authorizes_op = _lease.lease_authorizes_op
 verify_body_signed_request = _lease.verify_body_signed_request
 
 
+# ---- Tagged-hash helpers (Def. 2 / Def. 4 / Eq. anchor) ----
+
+def _import_hashes():
+    spec_path = Path(__file__).resolve().parent / "rmem_hashes.py"
+    if not spec_path.exists():
+        sys.exit(f"rmem_hashes.py not found at {spec_path}")
+    spec = importlib.util.spec_from_file_location("rmem_hashes", spec_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["rmem_hashes"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_hashes = _import_hashes()
+CANON_PROFILE_JCS = _hashes.CANON_PROFILE_JCS
+capsule_merkle_root_hex = _hashes.capsule_merkle_root_hex
+chunk_hash_hex = _hashes.chunk_hash_hex
+
+
 # ---- ERC-8264 op codes ----
 
 OP_READ = "readMemory"
@@ -88,10 +108,13 @@ OP_WRITE = "writeMemory"
 OP_DELETE = "deleteMemory"
 OP_EXPORT = "exportMemory"
 
-CAPSULE_VERSION = "1"
-SIGNATURE_SUITE = "eip-191-authmsg"
-SUBJECT_ID_METHOD = "eth-address"
-CONTROLLER_METHOD = "eth-address"
+# Bumped from 0.1: v0.2 capsule manifest is Def. 4 conformant
+# (canonProfile, h_m, tagged chunk hashes, G_X leaf).
+CAPSULE_VERSION = "0.2"
+CAPSULE_HASH_ALG = "sha256"
+
+SIG_EIP191 = "eip191"
+SIG_EIP712 = "eip712"
 
 
 # ---- signature layer (EIP-191) ----
@@ -139,27 +162,193 @@ def check_expiry(message_json: str) -> bool:
         return False
 
 
-# ---- merkle root for capsule manifest ----
+# ---- signature layer (EIP-712 typed data) ----
+#
+# Parallel to EIP-191. The semantics are identical: same op codes, same nonce
+# + expiry replay protection, same subject-binding. The difference is wire
+# format: EIP-712 produces a typed-data hash that wallets can render with
+# field names + types, instead of asking the user to sign an opaque hex blob.
+#
+# Field name choices follow Solidity camelCase (subject, recordId, bodyId,
+# expiresAt) rather than the EIP-191 path's snake_case JSON. They are *not*
+# interchangeable wire formats; the caller picks one scheme per op.
 
-def merkle_root(leaves: list[str]) -> str:
-    """Compute simple binary merkle root over a list of sha256 hex strings.
+EIP712_DOMAIN = {
+    "name": "RmemGateway",
+    "version": "0.1",
+    "chainId": 0,  # off-chain gateway; no enforcement contract bound to this domain
+}
 
-    Each leaf is treated as the hash itself (already hashed). Internal nodes are
-    sha256(left || right). Odd levels duplicate the last node.
+_EIP712_DOMAIN_TYPE = [
+    {"name": "name",    "type": "string"},
+    {"name": "version", "type": "string"},
+    {"name": "chainId", "type": "uint256"},
+]
+
+_EIP712_FIELDS_PER_OP: dict[str, list[dict]] = {
+    OP_READ: [
+        {"name": "op",         "type": "string"},
+        {"name": "subject",    "type": "string"},
+        {"name": "recordId",   "type": "string"},
+        {"name": "nonce",      "type": "bytes32"},
+        {"name": "expiresAt",  "type": "uint64"},
+    ],
+    OP_WRITE: [
+        {"name": "op",                 "type": "string"},
+        {"name": "subject",            "type": "string"},
+        {"name": "bodyId",             "type": "string"},
+        {"name": "layer",              "type": "string"},
+        {"name": "recordType",         "type": "string"},
+        {"name": "payloadFingerprint", "type": "bytes32"},
+        {"name": "nonce",              "type": "bytes32"},
+        {"name": "expiresAt",          "type": "uint64"},
+    ],
+    OP_DELETE: [
+        {"name": "op",        "type": "string"},
+        {"name": "subject",   "type": "string"},
+        {"name": "recordId",  "type": "string"},
+        {"name": "nonce",     "type": "bytes32"},
+        {"name": "expiresAt", "type": "uint64"},
+    ],
+    OP_EXPORT: [
+        {"name": "op",        "type": "string"},
+        {"name": "subject",   "type": "string"},
+        {"name": "nonce",     "type": "bytes32"},
+        {"name": "expiresAt", "type": "uint64"},
+    ],
+}
+
+_EIP712_PRIMARY_TYPE = {
+    OP_READ:   "ReadAuth",
+    OP_WRITE:  "WriteAuth",
+    OP_DELETE: "DeleteAuth",
+    OP_EXPORT: "ExportAuth",
+}
+
+
+def _to_bytes32(value) -> bytes:
+    """Accept 0x-hex / sha256: prefixed / raw hex / bytes; return exactly 32 bytes."""
+    if isinstance(value, bytes):
+        if len(value) != 32:
+            raise ValueError(f"expected 32 bytes, got {len(value)}")
+        return value
+    s = str(value)
+    if s.startswith("sha256:"):
+        s = s.split(":", 1)[1]
+    if s.startswith("0x"):
+        s = s[2:]
+    b = bytes.fromhex(s)
+    if len(b) != 32:
+        raise ValueError(f"expected 32 bytes, got {len(b)}")
+    return b
+
+
+def build_typed_auth_message(op: str, subject: str, **fields) -> dict:
+    """Canonical EIP-712 typed-data message the owner signs to authorise an op.
+
+    Returns the full `{domain, types, primaryType, message}` dict accepted by
+    eth_account.messages.encode_typed_data(full_message=...).
     """
-    if not leaves:
-        return sha256_hex(b"")
-    level = [bytes.fromhex(h.split(":", 1)[1]) if h.startswith("sha256:") else bytes.fromhex(h)
-             for h in leaves]
-    while len(level) > 1:
-        if len(level) % 2 == 1:
-            level.append(level[-1])
-        next_level = []
-        for i in range(0, len(level), 2):
-            import hashlib
-            next_level.append(hashlib.sha256(level[i] + level[i + 1]).digest())
-        level = next_level
-    return "sha256:" + level[0].hex()
+    if op not in _EIP712_FIELDS_PER_OP:
+        raise ValueError(f"unknown op {op!r}")
+    primary = _EIP712_PRIMARY_TYPE[op]
+    msg = {"op": op, "subject": subject}
+    # Per-op fields the caller supplied (e.g. recordId, bodyId, payloadFingerprint).
+    for f in _EIP712_FIELDS_PER_OP[op]:
+        name = f["name"]
+        if name in ("op", "subject", "nonce", "expiresAt"):
+            continue
+        if name not in fields:
+            raise ValueError(f"build_typed_auth_message: missing field {name!r} for op {op!r}")
+        v = fields[name]
+        if f["type"] == "bytes32":
+            v = _to_bytes32(v)
+        msg[name] = v
+    # Nonce + expiry.
+    nonce = fields.get("nonce")
+    msg["nonce"] = _to_bytes32(nonce) if nonce else secrets.token_bytes(32)
+    expires_at = fields.get("expiresAt") or fields.get("expires_at")
+    if expires_at is None:
+        expires_at = int((datetime.now(timezone.utc)
+                          + timedelta(minutes=10)).timestamp())
+    msg["expiresAt"] = int(expires_at)
+    return {
+        "domain": dict(EIP712_DOMAIN),
+        "types": {
+            "EIP712Domain": _EIP712_DOMAIN_TYPE,
+            primary: _EIP712_FIELDS_PER_OP[op],
+        },
+        "primaryType": primary,
+        "message": msg,
+    }
+
+
+def _coerce_typed_message(message) -> dict:
+    """Accept either a typed-data dict or its JSON-string form. Re-coerce
+    bytes32 fields if the input came through JSON (where bytes were hex strings).
+    """
+    if isinstance(message, str):
+        td = json.loads(message)
+    else:
+        td = message
+    primary = td.get("primaryType")
+    fields = td.get("types", {}).get(primary, [])
+    msg = td.get("message", {})
+    for f in fields:
+        if f["type"] == "bytes32" and isinstance(msg.get(f["name"]), str):
+            msg[f["name"]] = _to_bytes32(msg[f["name"]])
+    td["message"] = msg
+    return td
+
+
+def verify_owner_signature_712(typed_data, signature_hex: str, owner_address: str) -> bool:
+    """Verify EIP-712 signature against the expected owner Ethereum address."""
+    try:
+        td = _coerce_typed_message(typed_data)
+        signable = encode_typed_data(full_message=td)
+        recovered = Account.recover_message(signable, signature=signature_hex)
+        return recovered.lower() == owner_address.lower()
+    except Exception:
+        return False
+
+
+def check_expiry_712(typed_data) -> bool:
+    """Return True if the typed message is still within its expiresAt window."""
+    try:
+        td = _coerce_typed_message(typed_data)
+        expires = td["message"].get("expiresAt")
+        if not isinstance(expires, int):
+            return False
+        return expires > int(datetime.now(timezone.utc).timestamp())
+    except Exception:
+        return False
+
+
+# ---- capsule manifest construction (Def. 4) ----
+
+def _build_manifest_meta(*, soul_id: str, owner_address: str, sig_scheme: str,
+                         created_at: str) -> dict:
+    """The fields h_m commits to. Must NOT include record_index, provenance_graph,
+    merkle_root, or the signature — those are downstream of h_m."""
+    return {
+        "capsule_version": CAPSULE_VERSION,
+        "canonProfile": CANON_PROFILE_JCS,
+        "hashAlg": CAPSULE_HASH_ALG,
+        "soul_id": soul_id,
+        "controller_pubkeys": [owner_address],
+        "created_at": created_at,
+        "sig_scheme": sig_scheme,
+    }
+
+
+def _build_provenance_graph(record_index: list[dict]) -> dict:
+    """Minimal G_X: each record is a vertex; no edges (records do not currently
+    track explicit parents). Spec only requires acyclicity + identifier
+    consistency, both trivially satisfied."""
+    return {
+        "vertices": [r["record_id"] for r in record_index],
+        "edges": [],
+    }
 
 
 # ---- gateway ops ----
@@ -183,9 +372,10 @@ class RmemGateway:
         record_id: str,
         *,
         # Owner-direct auth:
-        message: Optional[str] = None,
+        message=None,
         signature: Optional[str] = None,
         owner_address: Optional[str] = None,
+        sig_scheme: str = SIG_EIP191,
         # Lease auth:
         lease: Optional[dict] = None,
         body_message: Optional[str] = None,
@@ -200,7 +390,8 @@ class RmemGateway:
             )
         elif message is not None:
             self._authorise(OP_READ, subject_soul, message, signature, owner_address,
-                            extra_match={"record_id": record_id})
+                            extra_match={"record_id": record_id},
+                            sig_scheme=sig_scheme)
         else:
             sys.exit("AUTH_REQUIRED: pass owner-direct (message+signature+owner_address) "
                      "or lease (lease+body_message+body_signature)")
@@ -233,9 +424,10 @@ class RmemGateway:
         provenance: dict,
         encrypt_key: bytes,
         # Owner-direct auth:
-        message: Optional[str] = None,
+        message=None,
         signature: Optional[str] = None,
         owner_address: Optional[str] = None,
+        sig_scheme: str = SIG_EIP191,
         # Lease auth:
         lease: Optional[dict] = None,
         body_message: Optional[str] = None,
@@ -253,7 +445,7 @@ class RmemGateway:
                                       extra_match=extra)
         elif message is not None:
             self._authorise(OP_WRITE, subject_soul, message, signature, owner_address,
-                            extra_match=extra)
+                            extra_match=extra, sig_scheme=sig_scheme)
         else:
             sys.exit("AUTH_REQUIRED: pass owner-direct (message+signature+owner_address) "
                      "or lease (lease+body_message+body_signature)")
@@ -270,12 +462,14 @@ class RmemGateway:
         self,
         subject_soul: str,
         record_id: str,
-        message: str,
+        message,
         signature: str,
         owner_address: str,
+        sig_scheme: str = SIG_EIP191,
     ) -> dict:
         self._authorise(OP_DELETE, subject_soul, message, signature, owner_address,
-                        extra_match={"record_id": record_id})
+                        extra_match={"record_id": record_id},
+                        sig_scheme=sig_scheme)
         result = self.vault.tombstone_record(soul_id=subject_soul, record_id=record_id)
         return {"op": OP_DELETE, "subject": subject_soul, **result}
 
@@ -284,12 +478,14 @@ class RmemGateway:
     def export_memory(
         self,
         subject_soul: str,
-        message: str,
+        message,
         signature: str,
         owner_address: str,
         out_dir: Path,
+        sig_scheme: str = SIG_EIP191,
     ) -> dict:
-        self._authorise(OP_EXPORT, subject_soul, message, signature, owner_address)
+        self._authorise(OP_EXPORT, subject_soul, message, signature, owner_address,
+                        sig_scheme=sig_scheme)
         records = self.vault.list_records(soul_id=subject_soul, include_tombstoned=False)
         if not records:
             sys.exit(f"no active records for {subject_soul}")
@@ -297,28 +493,47 @@ class RmemGateway:
         records_dir = out_dir / "records"
         records_dir.mkdir(exist_ok=True)
         record_index = []
+        chunk_hashes: list[bytes] = []
         for r in records:
             src = self.vault.root / "records" / f"{r['record_id']}.enc"
             dst = records_dir / f"{r['record_id']}.enc"
             shutil.copyfile(src, dst)
+            chunk_bytes = dst.read_bytes()
+            chunk_h = _hashes.chunk_hash(chunk_bytes)
+            chunk_hashes.append(chunk_h)
             record_index.append({
                 "record_id": r["record_id"],
-                "payload_hash": r["payload_hash"],
+                "payload_hash": r["payload_hash"],       # raw sha256(chunk) for on-disk integrity
+                "chunk_hash": "sha256:" + chunk_h.hex(), # tagged h_i = H(CAPSULE_CHUNK || chunk)
                 "layer": r["layer"],
                 "type": r["type"],
             })
-        leaves = [r["payload_hash"] for r in record_index]
-        root = merkle_root(leaves)
+        # For EIP-712, serialize the typed-data with bytes32 fields hex-encoded so
+        # the manifest is plain JSON (bytes are not JSON-serializable).
+        if sig_scheme == SIG_EIP712:
+            td = _coerce_typed_message(message)
+            primary = td.get("primaryType")
+            for f in td.get("types", {}).get(primary, []):
+                if f["type"] == "bytes32":
+                    v = td["message"].get(f["name"])
+                    if isinstance(v, (bytes, bytearray)):
+                        td["message"][f["name"]] = "0x" + bytes(v).hex()
+            manifest_message = td
+        else:
+            manifest_message = message
+        created_at = now_iso()
+        manifest_meta = _build_manifest_meta(
+            soul_id=subject_soul, owner_address=owner_address,
+            sig_scheme=sig_scheme, created_at=created_at,
+        )
+        provenance_graph = _build_provenance_graph(record_index)
+        root = capsule_merkle_root_hex(manifest_meta, chunk_hashes, provenance_graph)
         manifest = {
-            "capsule_version": CAPSULE_VERSION,
-            "subject_id": subject_soul,
-            "subject_id_method": SUBJECT_ID_METHOD,
-            "controllers": [{"method": CONTROLLER_METHOD, "identifier": owner_address}],
-            "created_at": now_iso(),
-            "signature_suite": SIGNATURE_SUITE,
+            **manifest_meta,
             "record_index": record_index,
+            "provenance_graph": provenance_graph,
             "merkle_root": root,
-            "owner_signature_message": message,
+            "owner_signature_message": manifest_message,
             "owner_signature": signature,
         }
         (out_dir / "manifest.json").write_text(canon_json(manifest))
@@ -328,19 +543,35 @@ class RmemGateway:
             "out_dir": str(out_dir),
             "record_count": len(record_index),
             "merkle_root": root,
+            "canonProfile": CANON_PROFILE_JCS,
         }
 
     # --- internal ---
+
+    # Mapping from EIP-191 snake_case field names to EIP-712 camelCase names.
+    # Used to translate `extra_match` keys when verifying typed-data messages.
+    _EIP712_FIELD_ALIAS = {
+        "record_id":           "recordId",
+        "body_id":             "bodyId",
+        "type":                "recordType",
+        "layer":               "layer",
+        "payload_fingerprint": "payloadFingerprint",
+    }
 
     def _authorise(
         self,
         op: str,
         subject_soul: str,
-        message: str,
+        message,
         signature: str,
         owner_address: str,
         extra_match: Optional[dict] = None,
+        sig_scheme: str = SIG_EIP191,
     ) -> None:
+        if sig_scheme == SIG_EIP712:
+            self._authorise_712(op, subject_soul, message, signature,
+                                owner_address, extra_match)
+            return
         try:
             msg = json.loads(message)
         except Exception:
@@ -356,6 +587,40 @@ class RmemGateway:
                 if msg.get(k) != v:
                     sys.exit(f"AUTH_FAILED: message {k}={msg.get(k)!r} != request {v!r}")
         if not verify_owner_signature(message, signature, owner_address):
+            sys.exit("AUTH_FAILED: signature does not verify against owner address")
+
+    def _authorise_712(
+        self,
+        op: str,
+        subject_soul: str,
+        typed_data,
+        signature: str,
+        owner_address: str,
+        extra_match: Optional[dict] = None,
+    ) -> None:
+        td = _coerce_typed_message(typed_data)
+        msg = td.get("message", {})
+        if msg.get("op") != op:
+            sys.exit(f"AUTH_FAILED: typed-data op {msg.get('op')!r} != expected {op!r}")
+        if msg.get("subject") != subject_soul:
+            sys.exit("AUTH_FAILED: typed-data subject does not match request subject")
+        if td.get("primaryType") != _EIP712_PRIMARY_TYPE[op]:
+            sys.exit(f"AUTH_FAILED: typed-data primaryType {td.get('primaryType')!r} "
+                     f"!= expected {_EIP712_PRIMARY_TYPE[op]!r}")
+        if td.get("domain") != EIP712_DOMAIN:
+            sys.exit("AUTH_FAILED: typed-data domain does not match gateway domain")
+        if not check_expiry_712(td):
+            sys.exit("AUTH_FAILED: typed-data signature expired or missing expiresAt")
+        if extra_match:
+            for k_in, v in extra_match.items():
+                k = self._EIP712_FIELD_ALIAS.get(k_in, k_in)
+                got = msg.get(k)
+                # Normalise bytes32 fields (extras like payload_fingerprint).
+                if isinstance(got, (bytes, bytearray)):
+                    got = "sha256:" + bytes(got).hex()
+                if got != v:
+                    sys.exit(f"AUTH_FAILED: typed-data {k}={got!r} != request {v!r}")
+        if not verify_owner_signature_712(td, signature, owner_address):
             sys.exit("AUTH_FAILED: signature does not verify against owner address")
 
     def _authorise_via_lease(
@@ -385,8 +650,11 @@ class RmemGateway:
         """
         if body_message is None or body_signature is None:
             sys.exit("AUTH_FAILED: lease auth requires body_message and body_signature")
-        # 1, 2, 6, 8 -- lease sig + lease expiry + subject match + body sig vs body_address
-        check = verify_body_signed_request(lease, body_message, body_signature)
+        # 1, 2, 6, 8 + explicit ¬Revoked via vault lookup: stale lease JSONs
+        # cannot bypass revocation just because their dict has no _status.
+        check = verify_body_signed_request(
+            lease, body_message, body_signature, vault=self.vault,
+        )
         if not check["valid"]:
             sys.exit(f"AUTH_FAILED: {check['reason']}")
         # 3 -- parse body_message
@@ -429,6 +697,15 @@ def _vault_for(args: argparse.Namespace) -> VaultStore:
     return VaultStore(Path(args.vault).expanduser())
 
 
+def _load_message_arg(path: str, sig_scheme: str):
+    """Load a message file. For EIP-712, parse as JSON typed-data; for EIP-191
+    pass through as raw text (the canonical JSON string the owner signed)."""
+    text = Path(path).read_text()
+    if sig_scheme == SIG_EIP712:
+        return json.loads(text)
+    return text
+
+
 def cmd_read(args: argparse.Namespace) -> None:
     gw = RmemGateway(_vault_for(args))
     key = load_vault_key(args.vault_key) if args.decrypt else None
@@ -443,9 +720,10 @@ def cmd_read(args: argparse.Namespace) -> None:
         kwargs["body_message"] = Path(args.body_message).read_text()
         kwargs["body_signature"] = args.body_signature
     elif args.message:
-        kwargs["message"] = Path(args.message).read_text()
+        kwargs["message"] = _load_message_arg(args.message, args.sig_scheme)
         kwargs["signature"] = args.signature
         kwargs["owner_address"] = args.owner
+        kwargs["sig_scheme"] = args.sig_scheme
     else:
         sys.exit("AUTH_REQUIRED: provide --message+--signature+--owner (owner-direct) "
                  "or --lease-file+--body-message+--body-signature (lease)")
@@ -482,32 +760,94 @@ def cmd_write(args: argparse.Namespace) -> None:
         kwargs["body_message"] = Path(args.body_message).read_text()
         kwargs["body_signature"] = args.body_signature
     elif args.message:
-        kwargs["message"] = Path(args.message).read_text()
+        kwargs["message"] = _load_message_arg(args.message, args.sig_scheme)
         kwargs["signature"] = args.signature
         kwargs["owner_address"] = args.owner
+        kwargs["sig_scheme"] = args.sig_scheme
     else:
         sys.exit("AUTH_REQUIRED: provide --message+--signature+--owner (owner-direct) "
                  "or --lease-file+--body-message+--body-signature (lease)")
     result = gw.write_memory(**kwargs)
+    if args.also_anchor:
+        anchor_result = _also_anchor(gw.vault, args)
+        result = {**result, "anchor": anchor_result}
     print(json.dumps(result, indent=2))
+
+
+def _also_anchor(vault: VaultStore, args: argparse.Namespace) -> dict:
+    """Compute the post-write memory_root and publish it to the EVM registry.
+
+    Mirrors `rmem-evm.py anchor-vault` but invoked inline after a successful
+    gateway write. Config via env: RMEM_REGISTRY_ADDRESS, RPC_URL,
+    DEPLOYER_PRIVATE_KEY. Anchor subject defaults to --owner (the Ethereum
+    address that signed the write) so the on-chain subject matches the
+    off-chain signing identity.
+    """
+    import importlib.util as _impu
+    spec_path = Path(__file__).resolve().parent / "rmem-evm.py"
+    if not spec_path.exists():
+        sys.exit(f"--also-anchor requires rmem-evm.py at {spec_path}")
+    spec = _impu.spec_from_file_location("rmem_evm", spec_path)
+    mod = _impu.module_from_spec(spec)
+    sys.modules["rmem_evm"] = mod
+    spec.loader.exec_module(mod)
+
+    rows = vault.list_records(soul_id=args.soul, include_tombstoned=False)
+    # Compute tagged chunk hashes by re-reading each .enc file; gives a
+    # Def. 4-prefixed Merkle root over the live memory state.
+    chunk_hs: list[bytes] = []
+    for r in rows:
+        enc_path = vault.root / "records" / f"{r['record_id']}.enc"
+        chunk_hs.append(_hashes.chunk_hash(enc_path.read_bytes()))
+    root_bytes = _hashes.merkle_root_v2(chunk_hs)
+
+    rpc_url = args.anchor_rpc_url or os.environ.get("RPC_URL") \
+        or os.environ.get("SEPOLIA_RPC_URL")
+    contract = args.anchor_contract or os.environ.get("RMEM_REGISTRY_ADDRESS")
+    pk_file = args.anchor_key_file
+    pk = (Path(pk_file).read_text().strip() if pk_file
+          else os.environ.get("DEPLOYER_PRIVATE_KEY"))
+    if not (rpc_url and contract and pk):
+        sys.exit("--also-anchor requires RPC_URL, RMEM_REGISTRY_ADDRESS, "
+                 "and DEPLOYER_PRIVATE_KEY (or --anchor-* flags)")
+    anchor_subject = args.anchor_subject or args.owner
+    if not anchor_subject:
+        sys.exit("--also-anchor needs a subject address (--anchor-subject or --owner)")
+
+    preset = mod.NETWORK_PRESETS.get(args.anchor_network, {})
+    client = mod.RegistryClient(
+        rpc_url=rpc_url, contract_address=contract, private_key=pk,
+        chain_id=preset.get("chain_id"), is_poa=preset.get("is_poa", False),
+    )
+    receipt = client.anchor_memory_root(
+        anchor_subject, root_bytes, mod.COMMIT_MEMORY_ROOT,
+    )
+    return {
+        **receipt,
+        "subject": anchor_subject,
+        "merkle_root": "sha256:" + root_bytes.hex(),
+        "leaf_count": len(leaves),
+    }
 
 
 def cmd_delete(args: argparse.Namespace) -> None:
     gw = RmemGateway(_vault_for(args))
-    message = Path(args.message).read_text()
+    message = _load_message_arg(args.message, args.sig_scheme)
     result = gw.delete_memory(
         subject_soul=args.soul, record_id=args.record,
         message=message, signature=args.signature, owner_address=args.owner,
+        sig_scheme=args.sig_scheme,
     )
     print(json.dumps(result, indent=2))
 
 
 def cmd_export(args: argparse.Namespace) -> None:
     gw = RmemGateway(_vault_for(args))
-    message = Path(args.message).read_text()
+    message = _load_message_arg(args.message, args.sig_scheme)
     result = gw.export_memory(
         subject_soul=args.soul, message=message, signature=args.signature,
         owner_address=args.owner, out_dir=Path(args.out).expanduser(),
+        sig_scheme=args.sig_scheme,
     )
     print(json.dumps(result, indent=2))
 
@@ -624,23 +964,36 @@ def cmd_selftest(args: argparse.Namespace) -> None:
             owner_address=owner_address, out_dir=capsule_dir,
         )
         manifest = json.loads((capsule_dir / "manifest.json").read_text())
-        if manifest.get("subject_id") != soul:
-            failures.append(f"manifest subject_id mismatch: got {manifest.get('subject_id')!r}")
-        if manifest.get("subject_id_method") != "eth-address":
-            failures.append(f"manifest subject_id_method != eth-address: {manifest.get('subject_id_method')!r}")
-        if manifest.get("capsule_version") != "1":
-            failures.append(f"manifest capsule_version != '1': {manifest.get('capsule_version')!r}")
-        if manifest.get("signature_suite") != "eip-191-authmsg":
-            failures.append(f"manifest signature_suite != eip-191-authmsg: {manifest.get('signature_suite')!r}")
-        controllers = manifest.get("controllers") or []
-        if not controllers or controllers[0].get("identifier") != owner_address:
-            failures.append(f"manifest controllers[0].identifier mismatch: {controllers!r}")
+        if manifest["soul_id"] != soul:
+            failures.append("manifest soul_id mismatch")
+        if manifest.get("canonProfile") != CANON_PROFILE_JCS:
+            failures.append(f"manifest canonProfile = {manifest.get('canonProfile')!r} "
+                            f"(expected {CANON_PROFILE_JCS!r})")
+        if manifest.get("capsule_version") != CAPSULE_VERSION:
+            failures.append(f"manifest capsule_version != {CAPSULE_VERSION}")
         if len(manifest["record_index"]) != 1:
             failures.append(f"manifest record_index has {len(manifest['record_index'])} entries (expected 1)")
-        # Re-verify merkle root independently
-        recomputed = merkle_root([r["payload_hash"] for r in manifest["record_index"]])
+        # Re-verify Def. 4 Merkle root independently from the .enc files we just wrote.
+        meta_check = _build_manifest_meta(
+            soul_id=manifest["soul_id"],
+            owner_address=manifest["controller_pubkeys"][0],
+            sig_scheme=manifest["sig_scheme"],
+            created_at=manifest["created_at"],
+        )
+        chunk_hs_check = [
+            _hashes.chunk_hash((capsule_dir / "records" / f"{e['record_id']}.enc").read_bytes())
+            for e in manifest["record_index"]
+        ]
+        recomputed = capsule_merkle_root_hex(
+            meta_check, chunk_hs_check, manifest["provenance_graph"],
+        )
         if recomputed != manifest["merkle_root"]:
-            failures.append("merkle_root does not verify")
+            failures.append(f"merkle_root does not recompute: got {recomputed} "
+                            f"vs manifest {manifest['merkle_root']}")
+        # Each manifest chunk_hash equals our independently-computed tagged hash.
+        for e, h in zip(manifest["record_index"], chunk_hs_check):
+            if e["chunk_hash"] != "sha256:" + h.hex():
+                failures.append(f"chunk_hash mismatch for {e['record_id']}")
         # Verify the manifest's owner_signature
         if not verify_owner_signature(
             manifest["owner_signature_message"],
@@ -813,6 +1166,110 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         if not rejected:
             failures.append("lease-path: L3 canonical write was accepted without owner cosign")
 
+        # --- EIP-712 PATH: parallel write/read/delete using typed-data signatures ---
+        td_payload = b"my eip-712 preference: dark mode"
+        td_fp = sha256_hex(td_payload)
+        td_write = build_typed_auth_message(
+            OP_WRITE, soul,
+            bodyId=body, layer="L3_canonical", recordType="preference",
+            payloadFingerprint=td_fp,
+        )
+        td_write_sig = owner_account.sign_message(
+            encode_typed_data(full_message=td_write)
+        ).signature.hex()
+        td_result = gw.write_memory(
+            subject_soul=soul,
+            message=td_write, signature=td_write_sig, owner_address=owner_address,
+            sig_scheme=SIG_EIP712,
+            body_id=body, layer="L3_canonical", type_="preference",
+            payload=td_payload,
+            rights={"read": ["owner"], "write": ["owner"],
+                    "delete": ["owner"], "export": ["owner"]},
+            provenance={"created_by": "selftest-712", "source": "selftest-712",
+                        "created_at": now_iso()},
+            encrypt_key=enc_key,
+        )
+        td_rid = td_result["record_id"]
+
+        # 712 read
+        td_read = build_typed_auth_message(OP_READ, soul, recordId=td_rid)
+        td_read_sig = owner_account.sign_message(
+            encode_typed_data(full_message=td_read)
+        ).signature.hex()
+        td_read_result = gw.read_memory(
+            subject_soul=soul, record_id=td_rid,
+            message=td_read, signature=td_read_sig, owner_address=owner_address,
+            sig_scheme=SIG_EIP712,
+            decrypt_key=enc_key,
+        )
+        if base64.b64decode(td_read_result["payload_b64"]) != td_payload:
+            failures.append("eip712: decrypted payload mismatch")
+
+        # 712 read with wrong signature -> rejected
+        bad_712_sig = "0x" + "0" * 130
+        rejected = False
+        try:
+            gw.read_memory(
+                subject_soul=soul, record_id=td_rid,
+                message=td_read, signature=bad_712_sig, owner_address=owner_address,
+                sig_scheme=SIG_EIP712,
+            )
+        except SystemExit:
+            rejected = True
+        if not rejected:
+            failures.append("eip712: bad signature was NOT rejected")
+
+        # 712 write with tampered payload (payloadFingerprint mismatch) -> rejected
+        tampered_712 = b"my eip-712 preference: light mode"
+        rejected = False
+        try:
+            gw.write_memory(
+                subject_soul=soul,
+                message=td_write, signature=td_write_sig, owner_address=owner_address,
+                sig_scheme=SIG_EIP712,
+                body_id=body, layer="L3_canonical", type_="preference",
+                payload=tampered_712,  # different fp
+                rights={"read": ["owner"], "write": ["owner"],
+                        "delete": ["owner"], "export": ["owner"]},
+                provenance={"created_by": "selftest-712", "source": "selftest-712",
+                            "created_at": now_iso()},
+                encrypt_key=enc_key,
+            )
+        except SystemExit:
+            rejected = True
+        if not rejected:
+            failures.append("eip712: payload-fingerprint mismatch was NOT rejected")
+
+        # 712 export -> manifest carries sig_scheme + dict message + signature verifies
+        td_export = build_typed_auth_message(OP_EXPORT, soul)
+        td_export_sig = owner_account.sign_message(
+            encode_typed_data(full_message=td_export)
+        ).signature.hex()
+        td_capsule_dir = tmp / "capsule_712"
+        gw.export_memory(
+            subject_soul=soul, message=td_export, signature=td_export_sig,
+            owner_address=owner_address, out_dir=td_capsule_dir,
+            sig_scheme=SIG_EIP712,
+        )
+        td_manifest = json.loads((td_capsule_dir / "manifest.json").read_text())
+        if td_manifest.get("sig_scheme") != SIG_EIP712:
+            failures.append("eip712 manifest: sig_scheme not set")
+        # Reconstruct the typed-data dict from manifest and verify the signature.
+        if not verify_owner_signature_712(
+            td_manifest["owner_signature_message"],
+            td_manifest["owner_signature"],
+            owner_address,
+        ):
+            failures.append("eip712 manifest: owner_signature does not verify")
+
+        # 712 cross-domain replay protection: tamper the domain -> verification fails
+        tampered_td = json.loads(json.dumps({
+            **td_export,
+            "domain": {**EIP712_DOMAIN, "name": "WrongDomain"},
+        }))
+        if verify_owner_signature_712(tampered_td, td_export_sig, owner_address):
+            failures.append("eip712: cross-domain signature should not verify")
+
         # Audit chain still intact through lease ops too
         ok, bad = vault.verify_audit_chain()
         if not ok:
@@ -843,8 +1300,11 @@ def main() -> None:
     p.add_argument("--soul", required=True, help="Soul ID (did:btc:...)")
     p.add_argument("--record", required=True)
     # Owner-direct auth:
+    p.add_argument("--sig-scheme", default=SIG_EIP191,
+                   choices=[SIG_EIP191, SIG_EIP712],
+                   help="signature scheme for --message (default eip191)")
     p.add_argument("--message", help="path to canonical owner-signed message JSON")
-    p.add_argument("--signature", help="owner EIP-191 signature hex (0x...)")
+    p.add_argument("--signature", help="owner signature hex (0x...)")
     p.add_argument("--owner", help="owner Ethereum address (0x...)")
     # Lease auth:
     p.add_argument("--lease-file", help="path to lease JSON")
@@ -858,8 +1318,11 @@ def main() -> None:
     p = sub.add_parser("write", help="writeMemory (owner-direct OR lease auth)")
     p.add_argument("--soul", required=True)
     # Owner-direct auth:
+    p.add_argument("--sig-scheme", default=SIG_EIP191,
+                   choices=[SIG_EIP191, SIG_EIP712],
+                   help="signature scheme for --message (default eip191)")
     p.add_argument("--message", help="path to canonical owner-signed message JSON")
-    p.add_argument("--signature", help="owner EIP-191 signature hex")
+    p.add_argument("--signature", help="owner signature hex")
     p.add_argument("--owner", help="owner Ethereum address")
     # Lease auth:
     p.add_argument("--lease-file", help="path to lease JSON")
@@ -874,11 +1337,30 @@ def main() -> None:
     p.add_argument("--rights", help="JSON")
     p.add_argument("--provenance", help="JSON")
     p.add_argument("--source", help="provenance.source override")
+    # --also-anchor: after the vault write, also call registry.anchorMemoryRoot
+    # on the EVM side with the new memory_root.
+    p.add_argument("--also-anchor", action="store_true",
+                   help="after vault write, anchor the new memory_root on the EVM registry "
+                        "(needs RPC_URL, RMEM_REGISTRY_ADDRESS, DEPLOYER_PRIVATE_KEY)")
+    p.add_argument("--anchor-network", default="sepolia",
+                   choices=["sepolia", "base-sepolia", "anvil"],
+                   help="EVM network preset (default sepolia)")
+    p.add_argument("--anchor-rpc-url", default=None,
+                   help="RPC URL (else RPC_URL / SEPOLIA_RPC_URL env)")
+    p.add_argument("--anchor-contract", default=None,
+                   help="registry address (else RMEM_REGISTRY_ADDRESS env)")
+    p.add_argument("--anchor-key-file", default=None,
+                   help="anchor signer key file (else DEPLOYER_PRIVATE_KEY env)")
+    p.add_argument("--anchor-subject", default=None,
+                   help="on-chain subject address (defaults to --owner)")
     p.set_defaults(func=cmd_write)
 
     p = sub.add_parser("delete", help="deleteMemory: tombstone a record (owner-signed)")
     p.add_argument("--soul", required=True)
     p.add_argument("--record", required=True)
+    p.add_argument("--sig-scheme", default=SIG_EIP191,
+                   choices=[SIG_EIP191, SIG_EIP712],
+                   help="signature scheme for --message (default eip191)")
     p.add_argument("--message", required=True)
     p.add_argument("--signature", required=True)
     p.add_argument("--owner", required=True)
@@ -886,6 +1368,9 @@ def main() -> None:
 
     p = sub.add_parser("export", help="exportMemory: produce a portable capsule (owner-signed)")
     p.add_argument("--soul", required=True)
+    p.add_argument("--sig-scheme", default=SIG_EIP191,
+                   choices=[SIG_EIP191, SIG_EIP712],
+                   help="signature scheme for --message (default eip191)")
     p.add_argument("--message", required=True)
     p.add_argument("--signature", required=True)
     p.add_argument("--owner", required=True)

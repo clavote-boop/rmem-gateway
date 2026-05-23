@@ -4,7 +4,7 @@
 Encrypted, owner-controlled local memory vault. SQLite index + AES-256-GCM
 encrypted payload files + hash-chained audit log. CLI only; no network, no chain.
 
-See SPEC_v0.1.md.
+See product/caas/rmem-gateway/SPEC_v0.1.md.
 
 Security invariants:
 - The vault key is never persisted by this code. Caller supplies it per invocation.

@@ -50,6 +50,14 @@ contract RmemMemoryRegistry is IAgentMemoryAccess {
     /// subject => body => lease
     mapping(address => mapping(address => Lease)) public leases;
 
+    /// subject => body => timestamp of revocation (0 means not revoked).
+    /// Per the spec's Allow_8264 (¬Revoked is a conjunct separate from
+    /// WithinTime), revocation must be checkable independently of the lease's
+    /// time window. Keeping this as its own mapping — rather than reusing the
+    /// zeroed `Lease.expiresAt` left behind by `delete leases[...]` — makes
+    /// the conjunct explicit and the audit trail unambiguous.
+    mapping(address => mapping(address => uint64)) public revokedAt;
+
     // ---------------------------------------------------------------
     // Events (in addition to IAgentMemoryAccess.MemoryWritten/Deleted)
     // ---------------------------------------------------------------
@@ -160,17 +168,21 @@ contract RmemMemoryRegistry is IAgentMemoryAccess {
     // ---------------------------------------------------------------
 
     /// @notice Grant a body a scoped, time-bounded lease over the caller's memory.
-    ///         Replaces any existing lease for that body.
+    ///         Replaces any existing lease for that body and clears any prior
+    ///         revocation timestamp (so re-granting after revoke is supported).
     function grantLease(address body, uint64 scopes, uint64 expiresAt) external {
         if (body == address(0) || scopes == 0 || expiresAt <= block.timestamp) {
             revert InvalidLease();
         }
         leases[msg.sender][body] = Lease({ expiresAt: expiresAt, scopes: scopes });
+        revokedAt[msg.sender][body] = 0;
         emit LeaseGranted(msg.sender, body, scopes, expiresAt);
     }
 
-    /// @notice Revoke a body's lease over the caller's memory.
+    /// @notice Revoke a body's lease over the caller's memory. Sets an explicit
+    ///         revocation timestamp checked independently of `expiresAt`.
     function revokeLease(address body) external {
+        revokedAt[msg.sender][body] = uint64(block.timestamp);
         delete leases[msg.sender][body];
         emit LeaseRevoked(msg.sender, body);
     }
@@ -198,6 +210,10 @@ contract RmemMemoryRegistry is IAgentMemoryAccess {
 
     function _isAuthorized(address subject, uint64 requiredScope) internal view returns (bool) {
         if (msg.sender == subject) return true;
+        // Spec Eq. allow-revoke: ¬Revoked is an independent conjunct from
+        // WithinTime. Check it explicitly first so revocation cannot be
+        // mistaken for an expired-time false.
+        if (revokedAt[subject][msg.sender] != 0) return false;
         Lease memory l = leases[subject][msg.sender];
         if (l.expiresAt <= block.timestamp) return false;
         return (l.scopes & requiredScope) == requiredScope;
