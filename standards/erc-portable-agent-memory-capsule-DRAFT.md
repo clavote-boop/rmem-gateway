@@ -157,7 +157,7 @@ This ERC is additive. ERC-8264 implementations that do not adopt this ERC contin
 
 ## Reference Implementation
 
-A reference implementation is maintained at `clavote-research` (private repository at time of draft submission; reference code will be released under CC0 at ERC publication). It comprises:
+A CC0 reference implementation is published at https://github.com/clavote-boop/rmem-gateway . It comprises:
 
 - An off-chain vault: encrypted SQLite index, AES-256-GCM payload encryption, hash-chained audit log. Implements the storage layer for `readMemory` / `writeMemory` / `deleteMemory`.
 - An ERC-8264 gateway: EIP-191 owner-signature verification on all four operations, with `exportMemory` producing a Capsule per §1 (owner-signed manifest, Merkle root, ciphertext payload files).

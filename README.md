@@ -2,7 +2,7 @@
 
 Reference implementation of [ERC-8264](standards/erc-8264.md) "AI Agent Memory Access Rights" plus the companion [Portable Agent Memory Capsule and Body Lease](standards/erc-portable-agent-memory-capsule-DRAFT.md) draft. Also hosts [CAAP-ROBOTID v1.1](CAAP_ROBOTID_v1.1_MODULE.md), the identity-layer module these specs slot into.
 
-License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE).
+License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 
 ## What's here
 
