@@ -43,7 +43,7 @@ All five should print `selftest: OK`. The tests cover happy path, tamper detecti
 | B | `rmem-gateway.py` — four ERC-8264 ops + capsule export + EIP-712 | shipped, selftest |
 | C | `rmem-lease.py` + gateway lease auth + `rmem-migrate.py` | shipped, selftest |
 | D | `rmem-anchor.py` — OP_RETURN anchoring (signet / mutinynet / testnet) | shipped, live-verified |
-| **D-EVM** | `rmem-evm.py` + `contracts/RmemMemoryRegistry.sol` — EVM ops + `MemoryAnchored` event anchoring | shipped, 19/19 Foundry tests, **deployed on Sepolia + Base Sepolia** |
+| **D-EVM** | `rmem-evm.py` + `contracts/RmemMemoryRegistry.sol` — EVM ops + `MemoryAnchored` event anchoring | shipped, 19/19 Foundry tests, **deployed on Sepolia + Base Sepolia + BNB Testnet** |
 | E | Mainnet anchoring via local Bitcoin node | not in v0.1; gated on independent on-chain proof from D |
 
 Live anchors verified 2026-05-22:
@@ -51,8 +51,9 @@ Live anchors verified 2026-05-22:
 - Bitcoin mutinynet (OP_RETURN): [`224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a`](https://mutinynet.com/tx/224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a)
 - Ethereum Sepolia (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.etherscan.io/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
 - Base Sepolia (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.basescan.org/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
+- BNB Smart Chain Testnet (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://testnet.bscscan.com/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
 
-Both EVM deployments pass `supportsInterface(0x13a642d4)` (ERC-8264) and `supportsInterface(0x01ffc9a7)` (ERC-165). The two addresses are identical by design (same deployer EOA + nonce 0).
+All three EVM deployments are at the same address — deterministic from deployer EOA + nonce 0 — and each passes `supportsInterface(0x13a642d4)` (ERC-8264) and `supportsInterface(0x01ffc9a7)` (ERC-165).
 
 ## Composition
 
