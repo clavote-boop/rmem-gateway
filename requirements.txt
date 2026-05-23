@@ -3,3 +3,6 @@
 cryptography>=42,<46
 eth-account>=0.13,<1
 embit>=0.7,<1
+# Phase D-EVM: optional, only required for --network sepolia / base-sepolia anchoring
+# and for rmem-evm.py registry calls.
+web3>=6,<8

@@ -1,0 +1,8 @@
+cache/
+out/
+broadcast/
+.env
+*.log
+# Note: lib/ is intentionally NOT ignored — forge-std is tracked as a git
+# submodule (see ../.gitmodules). Submodule contents are managed by git's
+# submodule machinery; the parent repo only tracks the pointer.

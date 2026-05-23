@@ -11,10 +11,12 @@ License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 | [`SPEC_v0.1.md`](SPEC_v0.1.md) | Implementation spec |
 | [`CAAP_ROBOTID_v1.1_MODULE.md`](CAAP_ROBOTID_v1.1_MODULE.md) | Identity-layer module — Soul ID / Body ID / Wallet ID |
 | `rmem-vault.py` | Encrypted local store + SQLite index + hash-chained audit log |
-| `rmem-gateway.py` | The four ERC-8264 ops + EIP-191 owner signature verification + capsule export + lease auth |
+| `rmem-gateway.py` | The four ERC-8264 ops + **EIP-191 and EIP-712** owner-sig verification + capsule export + lease auth + `--also-anchor` |
 | `rmem-lease.py` | Body Lease primitive (issue / verify / scope-check / revoke) |
 | `rmem-anchor.py` | OP_RETURN commitment of capsule Merkle roots on a Bitcoin chain |
 | `rmem-migrate.py` | freeze / verify-capsule / mount (decrypt+re-encrypt across vault keys) |
+| `rmem-evm.py` | EVM client (web3.py) for `RmemMemoryRegistry`: write/read/anchor/lease + `anchor-vault` |
+| [`contracts/`](contracts/) | Solidity `RmemMemoryRegistry` (ERC-8264 + on-chain lease registry + `MemoryAnchored`) + Foundry tests + Sepolia/Base Sepolia deploy script |
 | `standards/erc-8264.md` | ERC-8264 source — also submitted to [ethereum/ERCs PR #1752](https://github.com/ethereum/ERCs/pull/1752) |
 | `standards/erc-portable-agent-memory-capsule-DRAFT.md` | Companion ERC draft — submission pending |
 
@@ -38,13 +40,19 @@ All five should print `selftest: OK`. The tests cover happy path, tamper detecti
 | Phase | Module | State |
 |---|---|---|
 | A | `rmem-vault.py` — vault + audit chain | shipped, selftest |
-| B | `rmem-gateway.py` — four ERC-8264 ops + capsule export | shipped, selftest |
+| B | `rmem-gateway.py` — four ERC-8264 ops + capsule export + EIP-712 | shipped, selftest |
 | C | `rmem-lease.py` + gateway lease auth + `rmem-migrate.py` | shipped, selftest |
 | D | `rmem-anchor.py` — OP_RETURN anchoring (signet / mutinynet / testnet) | shipped, live-verified |
+| **D-EVM** | `rmem-evm.py` + `contracts/RmemMemoryRegistry.sol` — EVM ops + `MemoryAnchored` event anchoring | shipped, 19/19 Foundry tests, **deployed on Sepolia + Base Sepolia** |
 | E | Mainnet anchoring via local Bitcoin node | not in v0.1; gated on independent on-chain proof from D |
 
-First live anchor on Bitcoin mutinynet 2026-05-22:
-[`224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a`](https://mutinynet.com/tx/224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a)
+Live anchors verified 2026-05-22:
+
+- Bitcoin mutinynet (OP_RETURN): [`224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a`](https://mutinynet.com/tx/224958929c193488e639715d278d98bd82b742b579a110a6b8309ce903969f0a)
+- Ethereum Sepolia (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.etherscan.io/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
+- Base Sepolia (`RmemMemoryRegistry`): [`0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e`](https://sepolia.basescan.org/address/0x2cf251859d172e292aa6a4ef4bbf7621b8117e4e)
+
+Both EVM deployments pass `supportsInterface(0x13a642d4)` (ERC-8264) and `supportsInterface(0x01ffc9a7)` (ERC-165). The two addresses are identical by design (same deployer EOA + nonce 0).
 
 ## Composition
 
