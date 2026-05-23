@@ -131,14 +131,45 @@ def is_frozen(vault: VaultStore, soul_id: str) -> bool:
 
 # ---- verify capsule ----
 
-REQUIRED_MANIFEST_FIELDS = (
+REQUIRED_MANIFEST_FIELDS_V1 = (
+    "capsule_version", "subject_id", "subject_id_method", "controllers",
+    "created_at", "signature_suite",
+    "record_index", "merkle_root", "owner_signature_message", "owner_signature",
+)
+
+REQUIRED_MANIFEST_FIELDS_LEGACY = (
     "capsule_version", "soul_id", "controller_pubkeys", "created_at",
     "record_index", "merkle_root", "owner_signature_message", "owner_signature",
 )
 
 
+def _normalize_manifest(manifest: dict) -> dict:
+    """Translate a legacy (v0.1, soul_id) manifest into the v1 chain-agnostic shape.
+
+    Mutates a copy; original left intact for diagnostics. Returns the normalized
+    view used by the verifier. Legacy fields are preserved alongside the normalized
+    ones so callers reading either schema continue to work.
+    """
+    if "subject_id" in manifest:
+        return manifest
+    if "soul_id" not in manifest:
+        return manifest
+    norm = dict(manifest)
+    norm["subject_id"] = manifest["soul_id"]
+    norm.setdefault("subject_id_method", "eth-address")
+    pubkeys = manifest.get("controller_pubkeys") or []
+    norm["controllers"] = [
+        {"method": "eth-address", "identifier": pk} for pk in pubkeys
+    ]
+    norm.setdefault("signature_suite", "eip-191-authmsg")
+    return norm
+
+
 def verify_capsule(capsule_dir: Path | str) -> dict:
     """Verify a capsule's manifest, signature, Merkle root, and every payload hash.
+
+    Accepts both the chain-agnostic v1 schema (subject_id / controllers /
+    signature_suite) and the legacy v0.1 schema (soul_id / controller_pubkeys).
 
     Returns {valid: bool, reasons: [str], manifest: dict|None}.
     """
@@ -147,29 +178,39 @@ def verify_capsule(capsule_dir: Path | str) -> dict:
     if not manifest_path.exists():
         return {"valid": False, "reasons": ["manifest.json not found"], "manifest": None}
     try:
-        manifest = json.loads(manifest_path.read_text())
+        raw_manifest = json.loads(manifest_path.read_text())
     except Exception as e:
         return {"valid": False, "reasons": [f"manifest is not valid JSON: {e}"],
                 "manifest": None}
     reasons: list[str] = []
 
-    for fld in REQUIRED_MANIFEST_FIELDS:
-        if fld not in manifest:
+    is_legacy = "subject_id" not in raw_manifest and "soul_id" in raw_manifest
+    required = REQUIRED_MANIFEST_FIELDS_LEGACY if is_legacy else REQUIRED_MANIFEST_FIELDS_V1
+    for fld in required:
+        if fld not in raw_manifest:
             reasons.append(f"missing required manifest field: {fld}")
     if reasons:
-        return {"valid": False, "reasons": reasons, "manifest": manifest}
+        return {"valid": False, "reasons": reasons, "manifest": raw_manifest}
 
-    # Owner signature on the export-authorization message must recover to
-    # controller_pubkeys[0] (the active owner).
-    owner_pk = (manifest["controller_pubkeys"] or [None])[0]
+    manifest = _normalize_manifest(raw_manifest)
+
+    suite = manifest.get("signature_suite", "eip-191-authmsg")
+    if suite not in ("eip-191", "eip-191-authmsg"):
+        return {"valid": False,
+                "reasons": [f"unregistered signature_suite: {suite}"],
+                "manifest": raw_manifest}
+
+    # Owner signature recovers to controllers[0].identifier (the active owner).
+    controllers = manifest.get("controllers") or []
+    owner_pk = controllers[0].get("identifier") if controllers else None
     if not owner_pk:
-        reasons.append("controller_pubkeys is empty")
+        reasons.append("controllers is empty")
     elif not _verify_owner_sig(
         manifest["owner_signature_message"],
         manifest["owner_signature"],
         owner_pk,
     ):
-        reasons.append("owner_signature does not recover to controller_pubkeys[0]")
+        reasons.append("owner_signature does not recover to controllers[0].identifier")
 
     # Each record's .enc file present + on-disk hash matches manifest entry.
     for entry in manifest["record_index"]:
@@ -207,8 +248,8 @@ def mount_capsule(
         raise ValueError(f"capsule verification failed: {v['reasons']}")
     if len(old_vault_key) != KEY_LEN or len(new_vault_key) != KEY_LEN:
         raise ValueError(f"vault keys must be {KEY_LEN} bytes")
-    manifest = v["manifest"]
-    soul_id = manifest["soul_id"]
+    manifest = _normalize_manifest(v["manifest"])
+    soul_id = manifest["subject_id"]
     capsule_dir = Path(capsule_dir)
     target = VaultStore(Path(target_vault_root).expanduser())
     if target.db_path.exists():
@@ -307,9 +348,13 @@ def cmd_verify_capsule(args: argparse.Namespace) -> None:
     result = verify_capsule(args.capsule_dir)
     out = {"valid": result["valid"], "reasons": result["reasons"]}
     if result["manifest"]:
-        out["soul_id"] = result["manifest"]["soul_id"]
-        out["record_count"] = len(result["manifest"]["record_index"])
-        out["merkle_root"] = result["manifest"]["merkle_root"]
+        manifest = _normalize_manifest(result["manifest"])
+        out["subject_id"] = manifest["subject_id"]
+        out["subject_id_method"] = manifest.get("subject_id_method", "eth-address")
+        out["signature_suite"] = manifest.get("signature_suite", "eip-191-authmsg")
+        out["capsule_version"] = manifest.get("capsule_version", "0.1")
+        out["record_count"] = len(manifest["record_index"])
+        out["merkle_root"] = manifest["merkle_root"]
     print(json.dumps(out, indent=2))
     if not result["valid"]:
         sys.exit(1)
@@ -373,11 +418,16 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         })
         export_sig = owner.sign_message(encode_defunct(text=export_msg)).signature.hex()
         manifest = {
-            "capsule_version": "0.1", "soul_id": soul,
-            "controller_pubkeys": [owner.address],
-            "created_at": now_iso(), "record_index": rec_idx,
+            "capsule_version": "1",
+            "subject_id": soul,
+            "subject_id_method": "eth-address",
+            "controllers": [{"method": "eth-address", "identifier": owner.address}],
+            "created_at": now_iso(),
+            "signature_suite": "eip-191-authmsg",
+            "record_index": rec_idx,
             "merkle_root": mroot,
-            "owner_signature_message": export_msg, "owner_signature": export_sig,
+            "owner_signature_message": export_msg,
+            "owner_signature": export_sig,
         }
         (capsule / "manifest.json").write_text(canon_json(manifest))
 

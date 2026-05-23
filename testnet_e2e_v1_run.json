@@ -1,0 +1,67 @@
+{
+  "status": "OK",
+  "artifacts": {
+    "subject_id": "0xb4aE87405d5073c79E99F96A8ecDE5E9A8DD6347",
+    "subject_id_method": "eth-address",
+    "record_ids": [
+      "mem_1779508377397_9618ce78bfdc",
+      "mem_1779508377455_e7c707a55072",
+      "mem_1779508377503_f44d5cc011a8"
+    ],
+    "lease_id": "lease_1779508377537_04a2c3f40e82",
+    "lease_scopes": {
+      "read": [
+        "L1_session",
+        "L2_project",
+        "L3_canonical"
+      ],
+      "write": [
+        "L1_session"
+      ],
+      "delete": [],
+      "export": []
+    },
+    "lease_expires_at": "2026-05-23T04:52:57Z",
+    "manifest": {
+      "capsule_version": "1",
+      "controllers": [
+        {
+          "identifier": "0xb4aE87405d5073c79E99F96A8ecDE5E9A8DD6347",
+          "method": "eth-address"
+        }
+      ],
+      "created_at": "2026-05-23T03:52:57.626002Z",
+      "merkle_root": "sha256:6cd35a424fad84c4da7d4d2a2717acb7282f5c248b7976ffec8b23b8839fed3c",
+      "owner_signature": "679d73d54ee9e13dd8c239fbb25d590da0030b3c641ff5a0109b541b13c5a7a319801e2da604de80b8fa34187cc2b20730a91be3fcd1a33c1f066a29eb45b2d81b",
+      "owner_signature_message": "{\"expires_at\":\"2026-05-23T04:02:57Z\",\"nonce\":\"5931f35b9de3154181a73008e89c7993\",\"op\":\"exportMemory\",\"subject\":\"0xb4aE87405d5073c79E99F96A8ecDE5E9A8DD6347\"}",
+      "record_index": [
+        {
+          "layer": "L1_session",
+          "payload_hash": "sha256:9dd5c640ca14326cdc5fcd1bc551acd9a381c752182ce0d0e4419ca435ba1d1b",
+          "record_id": "mem_1779508377397_9618ce78bfdc",
+          "type": "episodic"
+        },
+        {
+          "layer": "L2_project",
+          "payload_hash": "sha256:54ec1815cbda21916d5ba507ef0b7270b99d551ef1a4b8483f3651dbd9cfe1e6",
+          "record_id": "mem_1779508377455_e7c707a55072",
+          "type": "project_state"
+        },
+        {
+          "layer": "L3_canonical",
+          "payload_hash": "sha256:94631c7926128993c5a122b53ebc9b58c62402046b59c30bfaa97c07071a964e",
+          "record_id": "mem_1779508377503_f44d5cc011a8",
+          "type": "preference"
+        }
+      ],
+      "signature_suite": "eip-191-authmsg",
+      "subject_id": "0xb4aE87405d5073c79E99F96A8ecDE5E9A8DD6347",
+      "subject_id_method": "eth-address"
+    },
+    "merkle_root": "sha256:6cd35a424fad84c4da7d4d2a2717acb7282f5c248b7976ffec8b23b8839fed3c",
+    "mounted_record_count": 3,
+    "records_roundtripped": 3,
+    "op_return_bytes_hex": "4341415001016cd35a424fad84c4da7d4d2a2717acb7282f5c248b7976ffec8b23b8839fed3c",
+    "op_return_format": "caap-btc-opreturn-v1"
+  }
+}

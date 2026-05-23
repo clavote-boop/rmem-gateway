@@ -88,7 +88,10 @@ OP_WRITE = "writeMemory"
 OP_DELETE = "deleteMemory"
 OP_EXPORT = "exportMemory"
 
-CAPSULE_VERSION = "0.1"
+CAPSULE_VERSION = "1"
+SIGNATURE_SUITE = "eip-191-authmsg"
+SUBJECT_ID_METHOD = "eth-address"
+CONTROLLER_METHOD = "eth-address"
 
 
 # ---- signature layer (EIP-191) ----
@@ -308,9 +311,11 @@ class RmemGateway:
         root = merkle_root(leaves)
         manifest = {
             "capsule_version": CAPSULE_VERSION,
-            "soul_id": subject_soul,
-            "controller_pubkeys": [owner_address],
+            "subject_id": subject_soul,
+            "subject_id_method": SUBJECT_ID_METHOD,
+            "controllers": [{"method": CONTROLLER_METHOD, "identifier": owner_address}],
             "created_at": now_iso(),
+            "signature_suite": SIGNATURE_SUITE,
             "record_index": record_index,
             "merkle_root": root,
             "owner_signature_message": message,
@@ -619,8 +624,17 @@ def cmd_selftest(args: argparse.Namespace) -> None:
             owner_address=owner_address, out_dir=capsule_dir,
         )
         manifest = json.loads((capsule_dir / "manifest.json").read_text())
-        if manifest["soul_id"] != soul:
-            failures.append("manifest soul_id mismatch")
+        if manifest.get("subject_id") != soul:
+            failures.append(f"manifest subject_id mismatch: got {manifest.get('subject_id')!r}")
+        if manifest.get("subject_id_method") != "eth-address":
+            failures.append(f"manifest subject_id_method != eth-address: {manifest.get('subject_id_method')!r}")
+        if manifest.get("capsule_version") != "1":
+            failures.append(f"manifest capsule_version != '1': {manifest.get('capsule_version')!r}")
+        if manifest.get("signature_suite") != "eip-191-authmsg":
+            failures.append(f"manifest signature_suite != eip-191-authmsg: {manifest.get('signature_suite')!r}")
+        controllers = manifest.get("controllers") or []
+        if not controllers or controllers[0].get("identifier") != owner_address:
+            failures.append(f"manifest controllers[0].identifier mismatch: {controllers!r}")
         if len(manifest["record_index"]) != 1:
             failures.append(f"manifest record_index has {len(manifest['record_index'])} entries (expected 1)")
         # Re-verify merkle root independently

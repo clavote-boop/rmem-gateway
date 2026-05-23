@@ -107,7 +107,7 @@ Implementors MAY include extension fields prefixed `x_` in the manifest. Importi
 An importing gateway verifies a Capsule by:
 
 1. Parsing `manifest.json` and resolving `signature_suite` from the registry in §6.
-2. Computing the canonical JSON of the manifest with `owner_signature` removed.
+2. Computing the suite-defined signing input (the canonical manifest minus `owner_signature` for content-binding suites; the `owner_signature_message` value for auth-message-bound suites).
 3. Verifying `owner_signature` against an authorized controller per the suite's verification rules.
 4. Recomputing `merkle_root` from `record_index` and confirming the manifest's value.
 5. For each `record_index` entry, reading `records/<record_id>.enc`, computing its SHA-256, and confirming the manifest's `payload_hash`.
@@ -116,7 +116,7 @@ Verification MUST fail closed: any suite name not in the registry, any signature
 
 ## 6. Signature Suite Registry
 
-A signature suite specifies the signing curve, message wrapping, and verification rules. v0.1 defines two suites; additional suites MAY be registered by extension.
+A signature suite specifies the signing curve, message wrapping, and verification rules. v0.1 defines three suites; additional suites MAY be registered by extension.
 
 ### 6.1 `eip-191`
 
@@ -127,7 +127,20 @@ A signature suite specifies the signing curve, message wrapping, and verificatio
 - `owner_signature` encoding: `0x` + hex.
 - Authorized-controller resolution: the recovered secp256k1 public key's Ethereum address MUST match a controller whose `method` is `eth-address`.
 
-### 6.2 `bip-322-legacy`
+### 6.2 `eip-191-authmsg`
+
+A pre-sign variant of `eip-191` that lets the controller sign an authorization message off-host before the gateway constructs the manifest. The manifest carries the authorization message alongside the signature; verifiers recover the controller from the auth message rather than from the full manifest.
+
+- Curve: secp256k1.
+- Manifest MUST include an additional field `owner_signature_message` whose value is the canonical JSON of an authorization object with at least: `op` (the ERC-8264 op authorizing the export), `subject` (matching the manifest's `subject_id`), `nonce`, `expires_at`.
+- Signing input: `"\x19Ethereum Signed Message:\n" || len(authmsg) || authmsg`, where `authmsg` is the value of `owner_signature_message`.
+- Hash: keccak-256 of the signing input.
+- Signature: 65-byte `r || s || v` per Ethereum convention.
+- `owner_signature` encoding: `0x` + hex.
+- Authorized-controller resolution: the recovered secp256k1 public key's Ethereum address MUST match a controller whose `method` is `eth-address`.
+- **Binding gap (informative).** This suite's signature does NOT commit to the manifest's `merkle_root` or `record_index` directly. The auth message provides time-bounded export authorization but not content-binding; relying parties that require content-binding MUST use `eip-191` (signs the full canonical manifest) instead, or include `merkle_root` in a custom auth-message field and validate it.
+
+### 6.3 `bip-322-legacy`
 
 - Curve: secp256k1.
 - Signing per BIP-322 (legacy single-signature mode).
