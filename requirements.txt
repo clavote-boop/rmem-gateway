@@ -1,0 +1,5 @@
+# rmem-vault (Phase A) + rmem-gateway (Phase B) + rmem-anchor (Phase D) dependencies
+# Hash-pin via pip-compile when promoting to production deployment on Umbrel.
+cryptography>=42,<46
+eth-account>=0.13,<1
+embit>=0.7,<1

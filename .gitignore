@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.log
+.DS_Store
+.idea/
+.vscode/
+# Local vault files and keys — must never be committed
+*.priv
+*.wif
+vault.key
+*-vault/
