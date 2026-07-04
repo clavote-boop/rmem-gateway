@@ -1,6 +1,6 @@
 # rmem-gateway
 
-Reference implementation of [ERC-8264](standards/erc-8264.md) "AI Agent Memory Access Rights" plus the companion [Portable Agent Memory Capsule and Body Lease](standards/erc-portable-agent-memory-capsule-DRAFT.md) draft. Also hosts [CAAP-ROBOTID v1.1](CAAP_ROBOTID_v1.1_MODULE.md), the identity-layer module these specs slot into.
+Reference implementation of [ERC-8264](standards/erc-8264.md) "AI Agent Memory Access Rights" plus the companion [ERC-8269 "Body Lease and Credential Broker"](https://github.com/ethereum/ERCs/pull/1763) draft and the chain-agnostic [CAAP-Capsule spec](standards/capsule-spec-v0.1.md). Also hosts [CAAP-ROBOTID v1.1](CAAP_ROBOTID_v1.1_MODULE.md), the identity-layer module these specs slot into.
 
 License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 
@@ -18,7 +18,7 @@ License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 | `rmem-evm.py` | EVM client (web3.py) for `RmemMemoryRegistry`: write/read/anchor/lease + `anchor-vault` |
 | [`contracts/`](contracts/) | Solidity `RmemMemoryRegistry` (ERC-8264 + on-chain lease registry + `MemoryAnchored`) + Foundry tests + Sepolia/Base Sepolia deploy script |
 | `standards/erc-8264.md` | ERC-8264 source — also submitted to [ethereum/ERCs PR #1752](https://github.com/ethereum/ERCs/pull/1752) |
-| `standards/erc-portable-agent-memory-capsule-DRAFT.md` | Companion ERC draft — submission pending |
+| `standards/capsule-spec-v0.1.md` | Chain-agnostic CAAP-Capsule v0.1 format; companion ERC-8269 "Body Lease and Credential Broker" is [ethereum/ERCs PR #1763](https://github.com/ethereum/ERCs/pull/1763) |
 
 ## Quick start
 

@@ -16,7 +16,7 @@
 
 CAAP-ROBOTID defines a three-layer identity architecture for autonomous AI agents whose cognitive identity, memory, and economic activity must persist across hardware. The agent's cognitive identity (**Soul ID**) lives in a Bitcoin-rooted `secp256k1` keypair; the runtime substrate (**Body ID**) is a replaceable, leasable host bound to the Soul ID by signed records; the agent's economic identity (**Wallet ID**) is a Lightning sub-wallet bound to the same Soul ID. State integrity is anchored to Bitcoin via a single ≤80-byte `OP_RETURN` commitment (CAAP BTC Anchor). L402 Purchase Gating defines four authorization tiers (P0–P3) for autonomous spending.
 
-This module is **CC0**. It composes with [ERC-8264](standards/erc-8264.md) (memory access rights) and the [Portable Agent Memory Capsule companion ERC](standards/erc-portable-agent-memory-capsule-DRAFT.md) (capsule / lease / broker).
+This module is **CC0**. It composes with [ERC-8264](standards/erc-8264.md) (memory access rights), the companion [ERC-8269 "Body Lease and Credential Broker"](https://github.com/ethereum/ERCs/pull/1763), and the chain-agnostic [CAAP-Capsule spec](standards/capsule-spec-v0.1.md) (capsule / lease / broker).
 
 ## Motivation
 
@@ -186,7 +186,7 @@ Non-negotiable rules for any CAAP-ROBOTID private key:
 | Standard | Status | Relationship |
 |---|---|---|
 | **[ERC-8264](standards/erc-8264.md)** "AI Agent Memory Access Rights" | Draft (PR open) | The four-function rights interface (`read` / `write` / `delete` / `export`). The Soul ID's `evm_address` is the ERC-8264 subject. |
-| **Portable Agent Memory Capsule** ([companion ERC](standards/erc-portable-agent-memory-capsule-DRAFT.md)) | Draft | Defines the export bundle format, Body Lease schema (§2 above), and credential-broker rule. |
+| **Body Lease & Credential Broker** ([ERC-8269](https://github.com/ethereum/ERCs/pull/1763)) | Draft (PR open) | Defines the Body Lease schema (§2 above) and the credential-broker rule; the export bundle format is the chain-agnostic [CAAP-Capsule](standards/capsule-spec-v0.1.md). |
 | **EIP-7702** | Final | Optional on-chain session-key delegation that MAY be issued from the Soul key in parallel with an off-chain Body Lease. Aligned scope/expiry semantics. |
 | **W3C did:btc** ([MicroStrategy/did-btc-spec](https://github.com/MicroStrategy/did-btc-spec)) | Early draft | CAAP-ROBOTID's `did:btc:<pubkey>` form aligns with did:btc method registrations where applicable. |
 

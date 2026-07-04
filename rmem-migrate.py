@@ -78,6 +78,7 @@ def _import_hashes():
 
 _hashes = _import_hashes()
 RECOGNIZED_CANON_PROFILES = _hashes.RECOGNIZED_CANON_PROFILES
+KNOWN_CANON_VERSIONS = _hashes.KNOWN_CANON_VERSIONS
 CANON_PROFILE_JCS = _hashes.CANON_PROFILE_JCS
 
 
@@ -167,6 +168,14 @@ def verify_capsule(capsule_dir: Path | str) -> dict:
         reasons.append(
             f"unrecognized canonProfile {manifest['canonProfile']!r}; "
             f"recognized: {sorted(RECOGNIZED_CANON_PROFILES)}"
+        )
+    # canonVersion gate (Def. 1). Absent means the default (1); a present
+    # value we do not recognize must be rejected.
+    canon_version = manifest.get("canonVersion", _hashes.CANON_VERSION)
+    if canon_version not in KNOWN_CANON_VERSIONS:
+        reasons.append(
+            f"unrecognized canonVersion {canon_version!r}; "
+            f"known: {sorted(KNOWN_CANON_VERSIONS)}"
         )
     if manifest["hashAlg"] != "sha256":
         reasons.append(f"unsupported hashAlg {manifest['hashAlg']!r} (only sha256 supported)")
@@ -464,6 +473,21 @@ def cmd_selftest(args: argparse.Namespace) -> None:
         if v_bad_profile["valid"]:
             failures.append("unrecognized canonProfile was accepted")
         (capsule / "manifest.json").write_text(canon_json(manifest))
+
+        # --- canonVersion gate (Def. 1): unrecognized version must be rejected;
+        #     absent version (the default) must still verify ---
+        man = json.loads((capsule / "manifest.json").read_text())
+        man["canonVersion"] = 99
+        (capsule / "manifest.json").write_text(canon_json(man))
+        v_bad_version = verify_capsule(capsule)
+        if v_bad_version["valid"]:
+            failures.append("unrecognized canonVersion was accepted")
+        (capsule / "manifest.json").write_text(canon_json(manifest))
+        v_absent_version = verify_capsule(capsule)
+        if not v_absent_version["valid"]:
+            failures.append(
+                f"capsule with absent canonVersion rejected: {v_absent_version['reasons']}"
+            )
 
         # --- Merkle gate (Def. 4): swapped chunk_hash leaf must be rejected ---
         man = json.loads((capsule / "manifest.json").read_text())

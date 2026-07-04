@@ -77,7 +77,7 @@ forge script script/DeployRmemRegistry.s.sol:Deploy \
 ```
 
 The deployed address goes into ERC-8264 PR #1752's **Reference Implementation**
-section and ERC-8265 PR #1763's companion section.
+section and ERC-8269 PR #1763's companion section.
 
 ## Security notes
 

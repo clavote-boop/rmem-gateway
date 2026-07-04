@@ -3,7 +3,7 @@
 **Status:** Draft v0.1
 **Editors:** Clavote Research (`@clavote-boop`)
 **License:** CC0 — public domain dedication.
-**Discussion:** https://ethereum-magicians.org/t/erc-8265-portable-agent-memory-capsule-and-body-lease/28597 (cross-posted; chain-agnostic venue TBD — candidate CAIP submission)
+**Discussion:** https://ethereum-magicians.org/t/erc-8269-body-lease-and-credential-broker/28597 (cross-posted; chain-agnostic venue TBD — candidate CAIP submission)
 
 ## 1. Purpose
 
@@ -18,7 +18,7 @@ This specification defines:
 This specification does *not* define:
 
 - The authorization surface a gateway exposes to the agent (covered by ERC-8264 for Ethereum, or any equivalent rights interface in another ecosystem).
-- The lease primitive that binds an agent identity to a host (covered by ERC-8265 for the EVM ecosystem).
+- The lease primitive that binds an agent identity to a host (covered by ERC-8269 for the EVM ecosystem).
 - The encryption scheme used for Capsule payloads (implementor-defined; only ciphertext hashes are committed).
 
 ## 2. Terminology
@@ -201,9 +201,9 @@ This spec does not define those formats; they are listed to indicate intended re
 
 An ERC-8264 implementation MAY return a CAAP-Capsule from `exportMemory(subject)`. The Capsule's `subject_id_method` SHOULD be `eth-address` matching the ERC-8264 subject. The Capsule's `signature_suite` SHOULD be `eip-191`.
 
-### 9.2 Use with ERC-8265
+### 9.2 Use with ERC-8269
 
-ERC-8265 (Body Lease + Credential Broker) defines the lease and credential surfaces on top of ERC-8264. ERC-8265's Credential Broker rule applies to any memory export, including a CAAP-Capsule: implementors MUST NOT embed raw credentials in Capsule payloads.
+ERC-8269 (Body Lease + Credential Broker) defines the lease and credential surfaces on top of ERC-8264. ERC-8269's Credential Broker rule applies to any memory export, including a CAAP-Capsule: implementors MUST NOT embed raw credentials in Capsule payloads.
 
 ### 9.3 Use with `did:btc` agents
 

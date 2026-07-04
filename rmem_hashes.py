@@ -33,6 +33,14 @@ CANON_PROFILE_JCS = "jcs-rfc8785"
 CANON_PROFILE_CBOR = "cbor-rfc8949"
 RECOGNIZED_CANON_PROFILES = frozenset({CANON_PROFILE_JCS, CANON_PROFILE_CBOR})
 
+# ---- canonVersion (Def. 1) ----
+# Revision of a canonProfile's rules. Per the spec a manifest omits the field
+# when the version is the default (1) and emits it only for later revisions;
+# an absent field is interpreted as CANON_VERSION. Verifiers reject any
+# canonVersion they do not recognize.
+CANON_VERSION = 1
+KNOWN_CANON_VERSIONS = frozenset({1})
+
 
 def canon_json(obj) -> str:
     """RFC 8785-shaped canonicalization for the JSON subset used here.
@@ -91,7 +99,10 @@ def merkle_root_v2(leaves: Iterable[bytes]) -> bytes:
     - Empty leaf set: sentinel = sha256(0x00) — distinct from any real leaf hash.
     - Leaves: H(0x00 || leaf)
     - Internal: H(0x01 || left || right)
-    - Right-duplicate padding to power of two.
+    - Odd node counts are padded level-by-level: at each level (leaf level
+      included) a lone trailing node is duplicated before pairing. This is
+      the Bitcoin construction, not leaf-level padding to a power of two;
+      the two diverge for some leaf counts (first at n=6).
     """
     leaves = list(leaves)
     if not leaves:

@@ -1,6 +1,6 @@
 //! rmem-solana-registry — Solana mirror of RmemMemoryRegistry.sol.
 //!
-//! Implements the ERC-8264 memory rights interface and the ERC-8265-shape body
+//! Implements the ERC-8264 memory rights interface and the ERC-8269-shape body
 //! lease, with the explicit `revoked_at` field that closes the Eq. allow-revoke
 //! gap in the v0.3.4 spec audit.
 //!
