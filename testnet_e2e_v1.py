@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """End-to-end testnet validation of the chain-agnostic v1 Capsule format.
 
-Walks the full ERC-8264 + ERC-8265 + CAAP-Capsule v0.1 path with the patched
+Walks the full ERC-8264 + ERC-8269 + CAAP-Capsule v0.1 path with the patched
 implementation:
 
   1. Fresh vault A.
   2. Write three records with different layers / types.
-  3. Mint a body lease (ERC-8265 Body Lease primitive) and verify its signature.
+  3. Mint a body lease (ERC-8269 Body Lease primitive) and verify its signature.
   4. exportMemory -> Capsule with the v1 chain-agnostic manifest schema.
   5. verify-capsule.
   6. Tamper-detection sanity check (payload byte flip rejected).
@@ -119,7 +119,7 @@ def main() -> int:
         if len(record_ids) != 3:
             failures.append(f"wrote {len(record_ids)} records, expected 3")
 
-        # 3. Mint + verify a Body Lease (ERC-8265 primitive)
+        # 3. Mint + verify a Body Lease (ERC-8269 primitive)
         body_account = Account.from_key("0x" + secrets.token_hex(32))
         body_id = "test-body-mutinynet-validation"
         unsigned_lease = build_lease_unsigned(
