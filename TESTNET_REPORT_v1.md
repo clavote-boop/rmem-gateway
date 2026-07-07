@@ -1,7 +1,7 @@
 # Testnet validation: CAAP-Capsule v1 chain-agnostic format
 
 **Run date:** 2026-05-22 (UTC: 2026-05-23T03:52:57Z)
-**Scope:** End-to-end exercise of the patched rmem-gateway implementation against the CAAP-Capsule v0.1 chain-agnostic specification and the slim ERC-8265 (Body Lease + Credential Broker).
+**Scope:** End-to-end exercise of the patched rmem-gateway implementation against the CAAP-Capsule v0.1 chain-agnostic specification and the slim ERC-8269 (Body Lease + Credential Broker).
 **Outcome:** All offline checks pass. Anchor TX construction is deferred to a broadcast step that runs off-host (per Work Plan D.2 — private keys never enter networked storage).
 
 ## What was tested
@@ -12,7 +12,7 @@ The script `testnet_e2e_v1.py` runs in nine stages inside a fresh tempdir, all i
 |---|---|---|
 | 1 | Fresh vault A initialized with a random 32-byte key | OK |
 | 2 | Three records written across `L1_session` / `L2_project` / `L3_canonical` with distinct types | 3 records written |
-| 3 | ERC-8265 Body Lease minted (owner-signed via EIP-191) and signature re-verified | Lease verifies |
+| 3 | ERC-8269 Body Lease minted (owner-signed via EIP-191) and signature re-verified | Lease verifies |
 | 4 | `exportMemory` produces a Capsule whose manifest matches the **v1 chain-agnostic schema** (`subject_id` + `subject_id_method` + `controllers[]` + `signature_suite`) | Manifest emitted; all spec-required fields present; no legacy `soul_id` / `controller_pubkeys` fields leak through |
 | 5 | `verify_capsule` accepts the freshly-emitted capsule | Valid |
 | 6 | Tamper detection: flipped one byte in one ciphertext → `verify_capsule` rejects; restored → accepts again | Tamper detected; clean restored |
@@ -37,7 +37,7 @@ hex   434141500101 6cd35a424fad84c4da7d4d2a2717acb7282f5c248b7976ffec8b23b8839fe
       └CAAP┘└v┘└t┘ └────────────── sha256 merkle_root ──────────────────────────────┘
 ```
 
-Lease (ERC-8265):
+Lease (ERC-8269):
 
 ```
 lease_id              lease_1779508377537_04a2c3f40e82
