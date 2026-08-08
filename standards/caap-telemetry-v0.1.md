@@ -1,243 +1,371 @@
-# CAAP-TELEMETRY v0.1 — Spatial Telemetry, Receipts, and Disclosure Proofs
+# CAAP-TELEMETRY v0.1
 
-**Status:** Draft v0.1
-**Editors:** Clavote Research (`@clavote-boop`)
-**License:** CC0 — public domain dedication.
-**Composes with:** CAAP-Capsule v0.1 (record commitment), CAAP-TICKET v0.1 (wire discipline, key domains), CAAP-WIPE / LeaseBond v0.2 (obligation keying, disclosure), CAAP-LSC (brief §4), m1-failure-state-spec-v0.1 (LossReport roots)
-**Canonical home:** this repository, `standards/`
+**Status:** Normative draft  
+**Companion artifacts:** `caap-evidence-v0.1.cddl`, `m2-conformance-vectors-v0.1.json`  
+**Consumes:** ERC-8269 lease/ticket state, CAAP-WIPE enrollment and obligation identifiers  
+**Feeds:** LeaseBond claims and disclosures, CAAP-LSC receipts, CAAP-Capsule records  
+**License:** CC0-1.0
 
 ## 1. Purpose
 
-This document is the **evidence substrate** of the stack. It defines, byte-exactly:
+CAAP-TELEMETRY defines a byte-exact, selectively disclosable record profile for spatial, sensor, actuator, safety, and witness evidence produced by embodied agents.
 
-1. how spatial and telemetry data is containerized, chunked, and committed (**content trees**),
-2. the signed objects produced at capture and execution time (**capture attestations, action receipts, terminal receipts, intent payloads**),
-3. the **disclosure bundle** a respondent submits against a LeaseBond claim, verifiable by an ERC-8004 validator with no out-of-band knowledge.
+The profile establishes five properties:
 
-Everything machine-signed here uses deterministic CBOR (RFC 8949 §4.2.1) in `COSE_Sign1` envelopes (RFC 9052), closed CDDL maps with integer labels, and **fixed-point integers with schema-defined SI units — floats are invalid in every signed structure**. Capsule *manifests* remain canonical JSON per CAAP-Capsule; this spec's JSON `x_content` fields are manifest-side descriptors, and its CBOR objects are the signed wire artifacts. Receipts are telemetry: action receipts flow through the same trees, records, and disclosure machinery as sensor data.
+1. Exact captured bytes can be authenticated without reserialization.
+2. A bounded incident window can be disclosed without revealing the rest of a mission.
+3. Sensor, cognition, and execution evidence use one proof construction.
+4. Every disclosed coordinate and timestamp carries enough context to be interpreted.
+5. `LeaseBond.respond(disclosureRoot)` commits a complete, reproducible proof transcript.
 
-The key words MUST / MUST NOT / SHOULD / MAY are per RFC 2119 / RFC 8174.
+This specification does not make sensors truthful. It makes their outputs attributable, fresh, internally ordered, tamper-evident, and comparable with independent evidence.
 
-## 2. Container and codecs
+## 2. Normative terminology
 
-- **Container: MCAP.** One MCAP file per telemetry record, self-describing (schemas embedded), chunk-indexed, `zstd` or `lz4` chunk compression.
-- **Codec registry** (extensible; unknown codecs MUST cause verifier rejection, mirroring CAAP-Capsule's suite rule):
+- **EvidenceItem:** descriptor for one captured message or derived safety record.
+- **EvidenceChunk:** a signed commitment to a time-bounded collection of EvidenceItems and exact MCAP Chunk bytes.
+- **Content tree:** ordered RFC 9162 Merkle tree of signed EvidenceChunk byte strings.
+- **Item tree:** ordered RFC 9162 Merkle tree of deterministic-CBOR EvidenceItem byte strings inside one EvidenceChunk.
+- **Record content root:** root of the content tree stored in the CAAP-Capsule record profile.
+- **DisclosureManifest:** deterministic-CBOR transcript binding disclosed chunks, proofs, schemas, frames, time policy, claim, bond, and obligation.
+- **Capture producer:** enrolled sensor key or measured LSC ingest key that signs an EvidenceChunk.
 
-| `content_type` | Payload |
+The terms MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL are normative.
+
+## 3. Encoding profile
+
+All metadata defined by this specification MUST use deterministic CBOR under RFC 8949 and the CDDL in `caap-evidence-v0.1.cddl`.
+
+Decoders MUST reject:
+
+- indefinite-length arrays, maps, byte strings, or text strings;
+- duplicate map keys;
+- non-preferred integer or length encodings;
+- floating-point values, including NaN and infinities;
+- unregistered CBOR tags;
+- unknown fields in a closed profile;
+- values outside their CDDL ranges;
+- invalid UTF-8 where a referenced external schema permits text;
+- a map whose encoded key order is not RFC 8949 deterministic order.
+
+Physical values in CAAP metadata MUST be signed integers with profile-defined SI scale factors. Re-encoding a floating-point sensor payload is forbidden; payload bytes are hashed exactly as captured.
+
+### 3.1 Core taint bitmap
+
+For v0.1, `taint` bits have these meanings. Bits 16–31 are reserved and MUST be zero.
+
+| Bit | Meaning |
+|---:|---|
+| 0 | Environmental visual text/symbol input contributed |
+| 1 | Environmental speech/audio interpretation contributed |
+| 2 | Unauthenticated network or Web/tool content contributed |
+| 3 | Generative/model-derived assertion contributed |
+| 4 | Unauthenticated human instruction contributed |
+| 5 | Externally supplied coordinate, transform, or target contributed |
+| 6 | A required sensor-integrity state was unresolved |
+| 7 | Information crossed from another lease/body session |
+| 8 | A policy-recognized authenticated operator approval contributed |
+| 9 | A policy-recognized facility authorization contributed |
+| 10 | Independent physical corroboration contributed |
+| 11 | Witness evidence contributed |
+| 12 | A declassification/appraisal step was applied |
+| 13 | Source material was incomplete or selectively unavailable |
+| 14 | Provenance graph was truncated |
+| 15 | Profile-specific extension present in the committed schema bundle |
+
+Bits 8–12 add provenance; they do not clear bits 0–7. The effective policy evaluates the complete bitmap and provenance graph.
+
+## 4. Container profile
+
+### 4.1 MCAP
+
+The default container is MCAP. MCAP stores heterogeneous, timestamped, pre-serialized data and defines Chunk records containing compressed or uncompressed batches of Schema, Channel, Message, and private records.
+
+Each CAAP EvidenceChunk MUST reference exactly one serialized MCAP Chunk record. `payload_hash` is:
+
+```text
+payload_hash = SHA-256(exact_mcap_chunk_record_bytes)
+```
+
+`exact_mcap_chunk_record_bytes` begins with the MCAP record opcode, includes the encoded record length and body, and ends at the record boundary. A verifier MUST hash the disclosed bytes before parsing them.
+
+Implementations MUST NOT normalize, decompress and recompress, rewrite indexes, reorder records, convert schemas, or regenerate an equivalent MCAP record before verification. Equivalent semantics are not byte identity.
+
+The Schema and Channel records needed to parse messages MUST either:
+
+1. occur earlier within the same disclosed MCAP Chunk record; or
+2. be supplied in a deterministic schema bundle whose root equals `schema_set_root`.
+
+### 4.2 Compression and encryption
+
+Compression occurs before hashing and encryption. The initially captured compressed bytes are the committed plaintext payload.
+
+MCAP provides no CAAP confidentiality guarantee. Each payload chunk SHOULD be encrypted independently after capture signing so that one incident window can be disclosed without releasing a mission-wide decryption key.
+
+The CAAP-Capsule `payload_hash` continues to commit the stored ciphertext artifact. CAAP-TELEMETRY `payload_hash` and `content_root` commit the selectively disclosable plaintext evidence. These commitments serve different purposes and MUST NOT be substituted for one another.
+
+## 5. EvidenceItem construction
+
+For each captured message or derived record, the producer constructs the CDDL `evidence-item` map.
+
+```text
+item_bytes  = deterministic_cbor(EvidenceItem)
+item_digest = SHA-256(item_bytes)
+```
+
+The `payload_hash` field of an EvidenceItem is `SHA-256(exact_message_payload_bytes)`. Message payload bytes remain in the MCAP Chunk record; the EvidenceItem supplies their schema, time, frame, stream sequence, provenance, and taint commitment.
+
+Items MUST be ordered by:
+
+```text
+(boot_counter, monotonic_ns, stream_id, stream_sequence)
+```
+
+Equal ordering tuples are invalid. Gaps MAY occur, but MUST be represented by a diagnostic item or chunk profile flag when the producer detected the loss.
+
+## 6. Merkle construction
+
+All trees in this specification use SHA-256 and the RFC 9162 construction:
+
+```text
+MTH({})       = SHA-256("")
+MTH({d[0]})   = SHA-256(0x00 || d[0])
+MTH(D[n])     = SHA-256(0x01 || MTH(D[0:k]) || MTH(D[k:n]))
+```
+
+For `n > 1`, `k` is the largest power of two smaller than `n`. Implementations MUST NOT duplicate an odd final node, sort digests, or use a power-of-two padding leaf.
+
+### 6.1 Item tree
+
+```text
+item_root = MTH([item_bytes_0, ..., item_bytes_n-1])
+```
+
+The EvidenceChunk header binds `item_root` and `item_count`.
+
+### 6.2 Content tree
+
+Each deterministic EvidenceChunk header is carried as the payload of a tagged COSE_Sign1 object. The complete deterministic COSE_Sign1 byte string is one content-tree entry:
+
+```text
+signed_chunk_bytes  = deterministic_cbor(COSE_Sign1)
+signed_chunk_digest = SHA-256(signed_chunk_bytes)
+content_root        = MTH([signed_chunk_bytes_0, ..., signed_chunk_bytes_n-1])
+```
+
+The content tree order is `(boot_counter, chunk_sequence)`. The signed header's `previous signed-chunk digest` MUST equal the preceding entry's `signed_chunk_digest`, except for the first chunk of a body session where it is the zero hash.
+
+The hash chain detects omission or alternative local histories; the Merkle tree supports selective disclosure and anchoring.
+
+## 7. Capture signatures
+
+EvidenceChunk headers MUST be signed at first touch by either:
+
+- an enrolled per-sensor secure-element key; or
+- the measured LSC ingest path that directly polls the sensor outside the cognitive runtime.
+
+The COSE object MUST:
+
+- use COSE_Sign1 with CBOR tag 18;
+- carry the EvidenceChunk header as an embedded payload;
+- place `alg`, `kid`, and content type in protected headers;
+- use empty `external_aad` for v0.1;
+- use an enrolled key whose measurement and role are discoverable from the obligation's enrollment evidence.
+
+The baseline algorithm is ES256. ES256 signatures MUST use the low-S form, even though EIP-7951 accepts both S values. Receipt and chunk identity is always the digest of the signed statement bytes, never the signature alone.
+
+Signature validity proves which enrolled capture path committed the bytes. It does not prove that the physical stimulus was truthful.
+
+## 8. Chunking rules
+
+The default profile uses monotonic-time windows of 1,000 milliseconds. A deployment MAY select a different duration in its retention and evidence policy.
+
+Chunks MUST:
+
+- be aligned using the secure monotonic time base for one `body_session_id`;
+- contain a half-open time range `[start, end)`;
+- never overlap another chunk from the same producer and stream set;
+- close early on boot transition, producer-key rotation, envelope change, terminal LSC event, or counter discontinuity;
+- not split one atomic MCAP Message record across payload artifacts;
+- report truncation, overflow, dropped data, saturation, and writer backpressure in profile flags and diagnostics.
+
+The v0.1 `profile_flags` bits are: bit 0 truncated chunk, 1 source sequence gap, 2 capture ring overflow, 3 writer backpressure, 4 payload CRC unavailable, 5 schema external to chunk, 6 frame graph external to chunk, 7 UTC unavailable, 8 UTC uncertainty exceeded, 9 producer counter discontinuity, 10 storage degradation, 11 anchoring deadline exceeded, and 12 terminal close. Bits 13–31 are reserved and MUST be zero.
+
+The 1,000 ms default is an evidence cadence, not a control-loop frequency and not a safety deadline.
+
+## 9. Time
+
+Security ordering is established by:
+
+```text
+body_session_id + boot_counter + monotonic_ns + sequence
+```
+
+UTC, GNSS time, network time, and HLC fields are correlation evidence. They MUST NOT extend Operating Ticket validity, delay a local safety transition, or override monotonic ordering.
+
+If UTC is supplied, `utc_uncertainty_ns` and `time_source` MUST also be supplied. A verifier applies the claim's versioned time-appraisal policy before comparing different bodies.
+
+Clock rollback, unexplained boot-counter regression, or two signed chunks claiming incompatible time ranges under one counter lineage is contradiction evidence.
+
+## 10. Spatial semantics
+
+Robotics payload schemas SHOULD follow REP 103 SI units and right-handed coordinate conventions. Mobile-platform frame semantics SHOULD follow REP 105.
+
+Every spatial EvidenceItem MUST provide a nonzero `frame_id_hash`. Every EvidenceChunk containing spatial items MUST provide a nonzero `frame_graph_hash` committing the transforms required to resolve those frames during the chunk interval.
+
+The frame graph bundle MUST state:
+
+- frame names and hashed identifiers;
+- parent-child transforms;
+- transform validity intervals;
+- the fixed-point or original payload schema used;
+- calibration identifiers and covariance/uncertainty representation;
+- map/odom discontinuity events.
+
+`geo_commitment` MUST be a commitment to a canonical list of profile-qualified spatial cells and a nonce. Raw geocells SHOULD remain encrypted or be disclosed only at policy-approved resolution. Public fine-grained cells create a fleet-surveillance surface.
+
+## 11. Sensor integrity state
+
+Trust is evaluated per observation, not permanently per modality. Evidence policies SHOULD distinguish:
+
+| State | Meaning |
 |---|---|
-| `application/mcap; compression=zstd` | container (REQUIRED outer format) |
-| `model/draco` | point clouds, meshes |
-| `application/vnd.laz` | survey-grade LIDAR |
-| `application/vnd.octomap` | occupancy octrees |
-| `application/caap-posegraph+cbor` | SLAM keyframes + factor graph |
-| `video/av1` | camera streams |
-| `application/cdr` | ROS 2 CDR-encoded messages (kinematics, IMU) |
+| Authenticated | Produced by an enrolled device or measured ingest path |
+| Fresh | Counters, time, and sequence pass anti-replay policy |
+| Plausible | Physical and temporal invariants pass |
+| Corroborated | Independent fault domains agree within declared uncertainty |
+| Safety-qualified | All evidence requirements for the proposed consequence class pass |
 
-- Every schema used is identified as `<namespace>:<name>@<sha256 of schema text>`; a record's descriptor commits the **schema set hash** (§4). Verifiers MUST reject messages whose schema hash is not in the committed set.
-- **No canonicalization of payloads, ever.** Hashes are over encoded bytes exactly as captured and stored. Byte identity or nothing.
+These states belong in profile-defined item payloads or diagnostics. A signature alone establishes only `Authenticated`.
 
-## 3. Chunking and content trees (byte-exact)
+## 12. ActionReceipt integration
 
-### 3.1 Chunking
+A CAAP-LSC ActionReceipt is an EvidenceItem with `item_type = action_receipt`. Its exact deterministic-CBOR payload bytes are stored in the MCAP Chunk record and committed by the EvidenceItem `payload_hash`.
 
-Telemetry is chunked at capture into **HLC windows** (default `window_ms = 1000`), aligned to MCAP chunk boundaries: chunk *i* contains exactly the MCAP chunk record bytes (compressed form, as stored) for messages whose HLC timestamp lies in `[t0 + i·w, t0 + (i+1)·w)`. Implementations MUST cap `max_chunk_bytes` (RECOMMENDED ≤ 4 MiB) so a single reveal is always transferable.
+The receipt's:
 
-**HLC64 encoding:** a 64-bit unsigned integer — upper 48 bits unix milliseconds, lower 16 bits logical counter. The actor is implied by the signing key; HLC ranges are `[uint, uint]` pairs of HLC64.
+- `intent_set_root` commits cognition requests;
+- `verdict_set_root` commits LSC decisions;
+- `command_root` commits actuator commands;
+- `executed_root` commits independently captured actuator feedback and observed trajectory;
+- `sensor_evidence_root` commits the sensor inputs used by the safety decision.
 
-### 3.2 Content tree
+Each root uses the same RFC 9162 construction over deterministic EvidenceItem bytes. `executed_root` MUST NOT be an alias for `command_root`; the distinction is load-bearing for liability.
 
-The content tree is the RFC 9162 Merkle Tree Hash (`MTH`) over the ordered chunk byte strings:
+A TerminalReceipt is an independently signed special record and SHOULD also be inserted as `item_type = terminal_receipt` in the final recoverable EvidenceChunk.
 
-```
-MTH({})    = SHA-256("")
-MTH([c])   = SHA-256( 0x00 ‖ c )
-MTH(D[n])  = SHA-256( 0x01 ‖ MTH(D[0:k]) ‖ MTH(D[k:n]) ),
-             k = largest power of two < n
-```
+## 13. CAAP-Capsule record profile
 
-Leaves in capture order; **no odd-leaf duplication** — the split rule makes tree shape a pure function of `leaf_count`, which the descriptor MUST still commit (redundant defense and proof-sizing). The `0x00`/`0x01` domain prefixes prevent leaf/node second-preimage confusion. Inclusion proofs follow RFC 9162 §2.1.3.
-
-**Compatibility note:** the Portable Agent Memory Capsule ERC's record-level tree uses this same RFC 9162 construction (over `record_id ‖ payload_hash` entries), so one verifier implementation serves both layers. The legacy CAAP-Capsule v0.1 §4.4 tree (unprefixed, duplicate-last) remains distinct by specification for v1 capsules only; CAAP-Capsule v0.2 aligns on RFC 9162.
-
-### 3.3 Two commitments per record
-
-- `payload_hash` (CAAP-Capsule §4.6, unchanged): SHA-256 of the **ciphertext** file — transport/storage integrity.
-- `content_root` (this spec): root of the content tree over **plaintext chunks** — selective disclosure. Revealing chunk *i* requires the chunk bytes, its sibling path to `content_root`, the record's inclusion path to the capsule `merkle_root`, and the anchor reference — O(log n) end to end.
-
-### 3.4 Manifest descriptor (JSON, informative rendering)
+A CAAP-Capsule telemetry record MUST carry an extension equivalent to:
 
 ```json
-"x_content": {
-  "content_root": "sha256:…", "leaf_count": 2400,
-  "chunking": { "scheme": "hlc-window", "window_ms": 1000, "max_chunk_bytes": 4194304 },
-  "hlc_range": [123456789012345, 123456791412345],
-  "time_source_class": 2,
-  "frame_graph": "sha256:…", "geo_cells": ["s2:89c25c1d"],
-  "schema_set": "sha256:…", "content_type": "application/mcap; compression=zstd",
-  "capture_attestation": "base64(COSE_Sign1)"
+{
+  "x_content": {
+    "profile": "caap-telemetry-v0.1",
+    "content_root": "sha256:<32-byte root>",
+    "tree_size": 2400,
+    "chunking": { "scheme": "monotonic-window", "window_ms": 1000 },
+    "time_range_commitment": "sha256:<commitment>",
+    "frame_graph_root": "sha256:<root>",
+    "schema_bundle_root": "sha256:<root>",
+    "geo_commitment": "sha256:<commitment>",
+    "retention_policy_hash": "sha256:<hash>"
+  }
 }
 ```
 
-## 4. Capture attestation
+This JSON is part of the enclosing CAAP manifest and follows that specification's canonicalization. It is not used inside the LSC or capture path.
 
-Signed at record close by the **sensing domain key** (per-sensor secure element where present, else the LSC ingest key — attest at first touch):
+## 14. Selective disclosure
 
-```cddl
-capture-attestation = {
-   0: uint,            ; version = 1
-   1: bstr .size 32,   ; record_id
-   2: bstr .size 32,   ; content_root
-   3: uint,            ; leaf_count
-   4: uint,            ; window_ms
-   5: [uint, uint],    ; hlc_range (HLC64)
-   6: uint,            ; time_source_class: 0 best-effort, 1 NTS/Roughtime-checked, 2 TEE clock
-   7: uint,            ; boot_counter
-   8: uint,            ; capture_counter (strictly monotonic per signer)
-   9: bstr .size 32,   ; frame_graph_hash (tf snapshot)
-  10: [* uint],        ; geo_cells (S2 cell ids, uint64; coarse per privacy policy)
-  11: bstr .size 32,   ; schema_set_hash
-}
+### 14.1 DisclosureManifest
+
+`LeaseBond.respond(disclosureRoot)` uses:
+
+```text
+manifest_bytes = deterministic_cbor(DisclosureManifest)
+disclosureRoot = SHA-256(0x02 || manifest_bytes)
 ```
 
-`time_source_class` is evidence weighting, not decoration: resolvers SHOULD discount class-0 timestamps in contested windows. **Ordering is normative on `(boot_counter, capture_counter)`** — the rollback-protected counters the CAAP-WIPE contradiction checks also read; HLC64 values are correlation evidence for cross-body alignment, never the primary order. Two records from one signer are ordered by counters even when their HLC values disagree.
+The domain byte `0x02` distinguishes disclosure commitments from RFC 9162 leaves and internal nodes.
 
-## 5. Execution profile (CAAP-LSC wire)
+The manifest binds the claim, bond, obligation, lease, body, incident interval, Capsule root, anchor, disclosed content leaves, schema bundle, frame graph bundle, time policy, and prior commit-then-reveal transcript.
 
-### 5.1 IntentPayload
+### 14.2 Reveal package
 
-Signed by the **cognition-runtime key** (measured harness, Gap D):
+For every `disclosure-entry`, the responding party reveals:
 
-```cddl
-intent-payload = {
-   0: uint,            ; version = 1
-   1: bstr .size 32,   ; intent_id = SHA-256(0x02 ‖ actor ‖ seq)
-   2: uint,            ; seq (per cognition session)
-   3: uint,            ; issued_hlc (HLC64)
-   4: uint,            ; horizon_ms
-   5: bstr .size 32,   ; frame_id (hash of named frame in frame graph)
-   6: [* int],         ; target pose, fixed-point (µm, µrad)
-   7: {* uint => int}, ; bounds: dimension-code => fixed-point value
-                       ;   1: v_max (µm/s)  2: a_max (µm/s²)  3: force_max (mN)
-                       ;   4: torque_max (µN·m)  5: tool_class
-   8: uint,            ; context_taint: 0 clean, 1 tainted (harness-stamped)
-}
-```
+1. deterministic signed EvidenceChunk bytes;
+2. RFC 9162 inclusion path and content tree size;
+3. exact MCAP Chunk record bytes;
+4. item descriptors and item-level proofs needed by the claim;
+5. decryption material scoped to those chunks;
+6. schema, frame, calibration, time, and attestation appraisal bundles;
+7. the CAAP record-to-Capsule proof and Capsule anchor proof.
 
-### 5.2 ActionReceipt
+The verifier MUST check in that order from byte hashes outward. Parsing unverified MCAP or schema material is forbidden.
 
-Signed by the **LSC execution key**, one per telemetry chunk window, hash-chained:
+### 14.3 Completeness
 
-```cddl
-action-receipt = {
-   0: uint,            ; version = 1
-   1: bstr .size 32,   ; obligation_id (joins CAAP-WIPE / LeaseBond)
-   2: bstr .size 32,   ; ticket_hash (digest of governing DeadManTicket COSE object)
-   3: uint,            ; receipt_sequence (strictly monotonic per obligation)
-   4: bstr .size 32,   ; previous_receipt_hash (zero for sequence 1)
-   5: [uint, uint],    ; hlc_range
-   6: bstr .size 32,   ; envelope_hash (compiled envelope in force)
-   7: [* verdict],
-   8: bstr .size 32,   ; executed_root  (content tree over executed-trajectory chunks)
-   9: bstr .size 32,   ; intent_root    (content tree over intent-payload digests, this window)
-  10: uint,            ; boot_counter
-  11: uint,            ; monotonic_counter
-}
+An inclusion proof establishes presence, not completeness. A claim policy MUST therefore name required stream classes for the incident type. Missing required streams, unexplained sequence gaps, expired raw-data retention, or refusal to disclose are explicit appraisal results; they are not silently treated as zero-valued sensors.
 
-verdict = [ bstr .size 32,  ; intent_id
-            uint,           ; result: 0 executed, 1 clamped, 2 refused,
-                            ;         3 safe_stated, 4 estop
-            ? {* uint => int} ]  ; clamp deltas, same dimension codes as bounds
-```
+## 15. Retention tiers
 
-Receipts are stored as telemetry records (`content_type: application/caap-receipt+cbor`) and therefore inherit chunking, trees, capsule inclusion, and anchoring for free. A sequence gap or broken `previous_receipt_hash` chain in a disclosed window is itself evidence (missing-receipt inference, resolver-weighted). Receipt batches anchor via `EvidenceRootCommitted` on the settlement contract; anchoring failure never affects motion.
+- **T0:** raw MCAP payload chunks, signed headers, and proofs.
+- **T1:** policy-approved derived/keyframe payloads plus T0 commitments.
+- **T2:** signed headers, content roots, anchors, and appraisal results only.
 
-### 5.3 TerminalReceipt
+T0 retention MUST extend beyond the maximum claim, response, appeal, and zombie/contradiction windows applicable to the obligation. Destruction or aging of T0 before that deadline is evidence unavailability and may trigger adverse inference under LeaseBond policy.
 
-Best-effort last-gasp record, written to the LSC ring buffer on unrecoverable conditions; the black box of a §2.4.4 destruction claim:
+## 16. Witness evidence
 
-```cddl
-terminal-receipt = {
-   0: uint,            ; version = 1
-   1: bstr .size 32,   ; obligation_id
-   2: uint,            ; trigger: 1 impact, 2 thermal, 3 power, 4 watchdog, 5 other
-   3: uint,            ; hlc (HLC64)
-   4: {* uint => int}, ; final readings, fixed-point (accel µm/s², temp mK, bus mV, …)
-   5: bstr .size 32,   ; last_receipt_hash
-   6: uint,            ; boot_counter
-   7: uint,            ; monotonic_counter
-}
-```
+Witnesses use the same EvidenceChunk schema. Mesh transport may relay signed chunks and cross-sign digests, but relays do not become capture producers and cannot change authority.
 
-## 6. Disclosure bundle — what `respond` commits to
+Real-time witness availability is not required for ordinary arbitration. Attest-at-first-touch and local persistence allow later discovery. A safety or site policy MAY separately require live corroboration before a C3 action.
 
-The respondent to a LeaseBond claim publishes a **disclosure bundle**; `disclosureRoot = SHA-256(0x02 ‖ deterministic-CBOR(bundle))`.
+RF jamming, channel occupancy, packet loss, and clock-quality observations SHOULD be captured as `rf_health` items so loss of corroboration is itself visible evidence.
 
-```cddl
-disclosure-bundle = {
-   0: uint,                    ; version = 1
-   1: uint,                    ; claim_id
-   2: [uint, uint],            ; claim window (HLC64)
-   3: [* record-disclosure],
-}
+## 17. Anchoring
 
-record-disclosure = {
-   0: bstr .size 32,           ; record_id
-   1: [* bstr .size 32],       ; inclusion path: record → capsule merkle_root (CAAP-Capsule §4.4)
-   2: bstr .size 32,           ; capsule merkle_root
-   3: anchor-ref,              ; where and when that root was anchored
-   4: bstr,                    ; capture-attestation (COSE_Sign1 bytes)
-   5: [* chunk-reveal],
-}
+Anchoring cadence is a security parameter because evidence generated after the last anchor remains susceptible to key compromise and alternative-history construction.
 
-anchor-ref = [ uint,           ; kind: 1 caap-btc-opreturn-v1, 2 eth-event-log-v1
-               uint,           ; chain id / network id
-               bstr,           ; txid or (block number ‖ log index)
-               uint ]          ; anchor time (unix s, informative)
+Policies MUST declare:
 
-chunk-reveal = [ uint,         ; leaf_index
-                 bstr,         ; chunk_bytes (exact stored bytes)
-                 [* bstr .size 32] ]  ; sibling path to content_root
-```
+- maximum unanchored duration;
+- elevated cadence for C2/C3 operations;
+- accepted anchor types and finality rules;
+- behavior during connectivity loss;
+- whether witness cross-signatures provide interim anchoring weight.
 
-**Validator procedure** (an ERC-8004 validator, RFC 9334 verifier role, needs nothing beyond this document plus chain access): (1) parse the bundle under §2's decoder discipline; (2) confirm each `anchor-ref` predates the claim; (3) verify each capture attestation against the enrolled sensing/LSC keys; (4) recompute each revealed chunk's path to `content_root` (§3.2) and the record's path to the anchored capsule root; (5) decode chunks under the committed schema set and re-run the physics checks (kinematics consistency, fusion residuals, envelope intersection against `envelope_hash`); (6) emit an Attestation Result binding evidence hash, verifier version, and appraisal policy — which the resolver consumes. Claims and cross-checks MUST cite chunks by `(record_id, leaf_index)` so every assertion is mechanically dereferenceable.
+Anchoring a content root proves a commitment existed no later than anchor inclusion/finality. It does not prove the underlying sensor was accurate.
 
-**Completeness rule:** for the claim window, the bundle MUST include all records of the classes the lease's disclosure policy names (receipts always included). A window covered by an anchored `content_root` whose chunks are *not* revealed is `TelemetryWithheld` evidence; a revealed chunk failing verification is `EvidenceFraud` evidence.
+## 18. Required conformance tests
 
-## 7. Witness and proximity attestations
+Implementations MUST test:
 
-A witness (another body, or fixed infrastructure running this profile) MAY countersign an observed record root, in passing, over any transport:
+1. deterministic encoding produces the published byte vector;
+2. duplicate keys, floats, indefinite lengths, and unknown fields are rejected;
+3. item and content roots match the published RFC 9162 vectors;
+4. an odd number of leaves uses recursive splitting without duplication;
+5. MCAP recompression changes `payload_hash` and is rejected;
+6. a valid item proof and content proof verify through the Capsule anchor;
+7. wrong tree size, index, sibling order, or domain byte fails;
+8. boot-counter rollback and chunk-sequence reuse are contradiction evidence;
+9. invalid or high-S ES256 capture signatures are rejected by this profile;
+10. missing schemas and frame graphs fail spatial appraisal;
+11. UTC comparison without uncertainty and time policy is rejected;
+12. `command_root` and `executed_root` cannot be substituted;
+13. a DisclosureManifest for another claim, bond, or obligation is rejected;
+14. unavailable required streams produce an explicit incomplete result.
+15. `node verify-vectors.js` succeeds against the published vectors.
 
-```cddl
-proximity-attestation = {
-   0: uint,            ; version = 1
-   1: bstr .size 32,   ; observed content_root (or receipt hash)
-   2: bstr .size 32,   ; observer record_id in which the observation is logged
-   3: uint,            ; observer hlc (HLC64)
-   4: uint,            ; observer geo_cell (S2)
-   5: uint,            ; observer boot_counter
-}
-```
+## 19. References
 
-Signed by the **witness key** domain. Proximity attestations pre-build the witness graph for §2.4 arbitration and the `witness_root` of a LossReport; they carry zero authority (CAAP-TICKET §6 — witnessing, never arming). Discovery is retrospective via `geo_cells` overlap.
-
-## 8. Retention
-
-| Tier | Contents | Rule |
-|---|---|---|
-| T0 | raw chunks | MUST retain ≥ the bond's `claimDeadline` + resolver appeal window (C1+ leases) |
-| T1 | distilled (keyframes, landmarks, occupancy diffs) | retained per agent memory policy |
-| T2 | hashes only (roots, attestations, receipts) | retained indefinitely; cheap |
-
-Aging T0→T2 never breaks commitments — provability of *what was committed* survives; the ability to *reveal* does not. Dropping T0 inside a mandatory window is `TelemetryWithheld` by construction.
-
-## 9. Security considerations
-
-- **Time.** All ordering hangs on HLC64 values whose physical component is only as good as `time_source_class`. Class-2 (TEE clock) capture SHOULD be required for C2/C3 operation; resolvers weight accordingly (brief §3 Gap H).
-- **Geo-cell privacy.** `geo_cells` resolution is a privacy dial: manifests SHOULD carry coarse cells (S2 level ≤ 12) with fine location living inside encrypted chunks, disclosed only under claims.
-- **Spoofing.** This spec makes *fabrication* fail cryptographically (attest-at-first-touch, anchored roots, counters, hash-chained receipts) and gives *environmental* spoofing its adjudication substrate (multi-modal disclosure, witness graphs, fusion-residual checks) — the threat split and its limits are per brief §4.7; nothing here makes a sensor truthful.
-- **DoS bounds.** `max_chunk_bytes`, per-bundle reveal counts, and per-claim disclosure caps MUST be set in lease policy so a claimant cannot compel unbounded disclosure work, nor a respondent drown a validator.
-- **No floats, no tags, closed maps** — CAAP-TICKET §2.3's decoder rejection rules apply verbatim to every CBOR object in this spec.
-
-## 10. Copyright
-
-Copyright and related rights waived via CC0 1.0 Universal.
+- [MCAP format specification](https://mcap.dev/spec)
+- [MCAP implementation notes](https://mcap.dev/spec/notes)
+- [RFC 8949 — CBOR](https://www.rfc-editor.org/info/rfc8949/)
+- [RFC 9052 — COSE](https://www.rfc-editor.org/info/rfc9052/)
+- [RFC 9162 — Merkle tree and proof construction](https://www.rfc-editor.org/info/rfc9162/)
+- [ROS REP 103 — units and coordinate conventions](https://www.ros.org/reps/rep-0103.html)
+- [ROS REP 105 — mobile-platform coordinate frames](https://www.ros.org/reps/rep-0105.html)
+- [EIP-7951 — P-256 verification](https://eips.ethereum.org/EIPS/eip-7951)

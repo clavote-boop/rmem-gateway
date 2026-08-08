@@ -1,0 +1,270 @@
+; CAAP-EVIDENCE v0.1
+; Shared deterministic-CBOR schemas for CAAP-TELEMETRY and CAAP-LSC.
+; License: CC0-1.0
+;
+; Encoding is RFC 8949 deterministic CBOR with the additional restrictions in
+; the companion specifications: no floating point, no indefinite lengths, no
+; duplicate keys, no unregistered tags, and no unknown critical map entries.
+
+hash32 = bytes .size 32
+id32 = bytes .size 32
+uint8 = 0..255
+uint16 = 0..65535
+uint32 = 0..4294967295
+uint64 = 0..18446744073709551615
+int32 = -2147483648..2147483647
+int64 = -9223372036854775808..9223372036854775807
+
+; Time security is based on boot_counter + monotonic_ns. UTC and HLC fields are
+; correlation evidence only and MUST NOT extend a ticket or safety deadline.
+time-point = {
+  0: uint64,                ; boot_counter
+  1: uint64,                ; monotonic_ns
+  ? 2: int64,               ; utc_ns since Unix epoch
+  ? 3: uint64,              ; utc_uncertainty_ns
+  ? 4: time-source,
+  ? 5: uint32               ; hlc_logical
+}
+
+time-source = &(
+  none: 0,
+  local_unattested: 1,
+  local_secure_clock: 2,
+  nts_authenticated: 3,
+  roughtime_quorum: 4,
+  gnss_authenticated: 5,
+  facility_attested: 6
+)
+
+time-range = {
+  0: time-point,            ; inclusive start
+  1: time-point             ; exclusive end
+}
+
+; Every EvidenceItem commits exact payload bytes and the schema required to
+; parse them. An item is not independently signed; its enclosing signed chunk
+; authenticates item_root.
+evidence-item = {
+  0: 1,                     ; schema version
+  1: item-type,
+  2: id32,                  ; stream_id
+  3: uint64,                ; stream sequence
+  4: time-point,
+  5: hash32,                ; schema_hash
+  6: hash32,                ; frame_id_hash or zero hash
+  7: hash32,                ; SHA-256(exact payload bytes)
+  8: hash32,                ; provenance_root or zero hash
+  9: uint32,                ; taint bitmap
+  ? 10: hash32              ; preceding item digest for stream chaining
+}
+
+item-type = &(
+  sensor_sample: 0,
+  transform: 1,
+  actuator_command: 2,
+  actuator_feedback: 3,
+  intent: 4,
+  verdict: 5,
+  action_receipt: 6,
+  terminal_receipt: 7,
+  rf_health: 8,
+  witness: 9,
+  diagnostic: 10
+)
+
+; This is the payload of COSE_Sign1. The signature authenticates the item
+; tree, exact MCAP chunk bytes, stream identity, time basis, counter, and chain.
+evidence-chunk-header = {
+  0: 1,                     ; schema version
+  1: id32,                  ; lease_id
+  2: hash32,                ; lease_digest
+  3: id32,                  ; obligation_id or zero hash
+  4: id32,                  ; body_id
+  5: id32,                  ; body_session_id
+  6: id32,                  ; producer_key_id
+  7: id32,                  ; stream_set_id
+  8: uint64,                ; chunk sequence
+  9: time-range,
+  10: hash32,               ; schema_set_root
+  11: hash32,               ; frame_graph_hash or zero hash
+  12: hash32,               ; previous signed-chunk digest or zero hash
+  13: hash32,               ; SHA-256(exact plaintext MCAP Chunk record bytes)
+  14: hash32,               ; RFC 9162 item Merkle root
+  15: uint32,               ; item count / item tree size
+  16: uint32,               ; aggregate taint bitmap
+  17: hash32,               ; geo commitment or zero hash
+  18: uint64,               ; rollback-protected producer counter
+  19: uint32                ; profile flags
+}
+
+; IntentPayload is the deterministic cognition-to-LSC semantic air gap.
+; It is carried as the payload of a COSE_Sign1 signed by the measured cognition
+; runtime. No consequence-class field exists; the LSC computes that value.
+intent-payload = {
+  0: 1,
+  1: id32,                  ; intent_id
+  2: id32,                  ; lease_id
+  3: hash32,                ; lease_digest
+  4: id32,                  ; body_session_id
+  5: hash32,                ; Operating Ticket digest
+  6: uint64,                ; cognition sequence
+  7: uint64,                ; valid_after_monotonic_ns
+  8: uint32,                ; maximum age in milliseconds
+  9: target,
+  10: motion-bounds,
+  11: hash32,               ; provenance_root
+  12: uint32,               ; harness-stamped taint bitmap
+  13: hash32,               ; cognition measurement
+  14: hash32                ; previous intent digest or zero hash
+}
+
+target = {
+  0: target-type,
+  1: hash32,                ; target frame hash
+  ? 2: [3*3 int64],         ; position, micrometres
+  ? 3: [4*4 int32],         ; normalized quaternion, signed Q1.30
+  ? 4: [3*3 int64],         ; linear velocity, micrometres/second
+  ? 5: [3*3 int64],         ; angular velocity, microradians/second
+  ? 6: uint32,              ; tool class
+  ? 7: int64                ; tool command, profile-defined fixed point
+}
+
+target-type = &(
+  pose: 0,
+  twist: 1,
+  hold: 2,
+  tool: 3,
+  minimal_risk: 4
+)
+
+motion-bounds = {
+  0: uint64,                ; maximum linear velocity, micrometres/second
+  1: uint64,                ; maximum linear acceleration, micrometres/second^2
+  2: uint64,                ; maximum linear jerk, micrometres/second^3
+  3: uint64,                ; maximum force, millinewtons
+  4: uint64,                ; maximum torque, micronewton-metres
+  5: uint64,                ; maximum kinetic energy, millijoules
+  6: uint32                 ; maximum horizon in milliseconds
+}
+
+verdict = {
+  0: 1,
+  1: id32,                  ; intent_id
+  2: verdict-result,
+  3: uint32,                ; reason bitmap
+  4: consequence-class,     ; computed by LSC
+  5: hash32,                ; candidate trajectory root
+  6: hash32,                ; approved trajectory root or zero hash
+  7: hash32,                ; constraint evidence root
+  8: safety-metrics
+}
+
+verdict-result = &(
+  executed: 0,
+  projected: 1,
+  clamped: 2,
+  refused: 3,
+  aborted: 4,
+  minimal_risk: 5,
+  estop: 6
+)
+
+consequence-class = &(c0: 0, c1: 1, c2: 2, c3: 3)
+
+safety-metrics = {
+  0: uint64,                ; projected peak kinetic energy, millijoules
+  1: uint64,                ; projected stopping distance, micrometres
+  2: uint64,                ; minimum human separation, micrometres
+  3: uint64,                ; projected peak force, millinewtons
+  4: uint32                 ; confidence / integrity flags, not probability
+}
+
+action-receipt = {
+  0: 1,
+  1: id32,                  ; obligation_id
+  2: id32,                  ; lease_id
+  3: hash32,                ; lease_digest
+  4: id32,                  ; body_id
+  5: id32,                  ; body_session_id
+  6: uint64,                ; receipt chunk sequence
+  7: time-range,
+  8: hash32,                ; Operating Ticket digest
+  9: hash32,                ; compiled static/base envelope digest
+  10: hash32,               ; runtime constraint snapshot root
+  11: hash32,               ; intent set root
+  12: hash32,               ; verdict set root
+  13: hash32,               ; actuator command tree root
+  14: hash32,               ; executed/actuator-feedback tree root
+  15: hash32,               ; sensor evidence tree root
+  16: consequence-class,    ; maximum computed class in chunk
+  17: lsc-state,            ; state at chunk start
+  18: lsc-state,            ; state at chunk end
+  19: uint32,               ; fault bitmap
+  20: uint32,               ; deadline miss count
+  21: uint64,               ; maximum observed execution time, ns
+  22: hash32,               ; previous ActionReceipt digest or zero hash
+  23: hash32,               ; LSC firmware/compiler measurement
+  24: uint64,               ; rollback-protected LSC counter
+  ? 25: hash32              ; TerminalReceipt digest
+}
+
+lsc-state = &(
+  boot_locked: 0,
+  safe_idle: 1,
+  armed: 2,
+  executing: 3,
+  degraded: 4,
+  minimal_risk: 5,
+  estop_latched: 6,
+  terminal: 7
+)
+
+terminal-receipt = {
+  0: 1,
+  1: id32,                  ; obligation_id
+  2: id32,                  ; lease_id
+  3: hash32,                ; lease_digest
+  4: id32,                  ; body_id
+  5: id32,                  ; body_session_id
+  6: time-point,
+  7: uint32,                ; terminal cause bitmap
+  8: hash32,                ; last ActionReceipt digest
+  9: hash32,                ; last sensor evidence root
+  10: hash32,               ; last command root
+  11: hash32,               ; last executed/feedback root
+  12: hash32,               ; energy-state snapshot hash
+  13: lsc-state,
+  14: hash32,               ; LSC measurement
+  15: uint64                ; rollback-protected counter
+}
+
+; A DisclosureManifest is committed in ILeaseBond.respond(). All content and
+; receipt proofs refer to the same RFC 9162 SHA-256 construction.
+disclosure-manifest = {
+  0: 1,
+  1: uint64,                ; claim_id
+  2: uint64,                ; bond_id
+  3: id32,                  ; obligation_id
+  4: id32,                  ; lease_id
+  5: hash32,                ; lease_digest
+  6: id32,                  ; body_id
+  7: time-range,            ; requested incident interval
+  8: hash32,                ; capsule root
+  9: hash32,                ; anchor reference hash
+  10: [1* disclosure-entry],
+  11: hash32,               ; schema bundle root
+  12: hash32,               ; frame graph bundle root
+  13: hash32,               ; time appraisal policy hash
+  14: hash32                ; prior commitment/transcript hash or zero hash
+}
+
+disclosure-entry = {
+  0: hash32,                ; CAAP record identifier hash
+  1: hash32,                ; record content_root
+  2: uint32,                ; content tree size
+  3: uint32,                ; disclosed leaf index
+  4: hash32,                ; SHA-256(signed EvidenceChunk bytes)
+  5: [* hash32],            ; RFC 9162 inclusion path
+  6: hash32,                ; exact MCAP Chunk payload hash
+  7: hash32                 ; decryption/material-access descriptor hash
+}

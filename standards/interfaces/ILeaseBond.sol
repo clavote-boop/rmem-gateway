@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "./IWipeAttestation.sol";
+import {ClaimKind, ResolutionCode} from "./CaapM1Types.sol";
 
 /// @title  LeaseBond v0.2 — physical liability and delegated collateral for
 ///         ERC-8269 body leases
@@ -23,34 +24,6 @@ import "./IWipeAttestation.sol";
 ///         its parameters (quorum, appeal window, stake, conflict rules)
 ///         are part of the lease's signed terms.
 interface ILeaseBond {
-
-    // What a claim alleges (m1-failure-state-spec §2, adapted).
-    enum ClaimKind {
-        PhysicalDamage,       // body damaged property or hardware
-        WipeEvidenceFailure,  // wipe evidence missing/invalid after cure
-        CredentialRetention,  // broker-rule violation past lease end
-        TelemetryWithheld,    // no valid disclosure for the claim window
-        Equivocation,         // forked heads / conflicting tickets, same actor
-        EvidenceFraud,        // fabricated or anchored-root-contradicting evidence
-        CatastrophicLoss      // total physical loss of the body
-    }
-
-    // Who bears the loss / what was established (spec §2.3).
-    enum ResolutionCode {
-        None,
-        TimelyWipe,
-        LateWipeNoFault,
-        LateWipeOperatorFault,
-        QualifiedCasualty,
-        UnprovenLoss,
-        MountInvariantBreach,
-        DeliberateRetention,
-        AttestationEquivocation,
-        OperatorNonCooperation,
-        VendorOrVerifierFailure,
-        ChallengerAbuse,
-        ProtocolFailure
-    }
 
     enum BondState { None, Posted, Exiting, Locked, Released }
 
@@ -109,7 +82,7 @@ interface ILeaseBond {
     ///         funds the claimant's challenge bond, slashed on
     ///         ChallengerAbuse. `evidenceRoot` commits the claimant's
     ///         evidence BEFORE the respondent discloses (commit-then-reveal).
-    ///         For CatastrophicLoss the root commits a LossReport
+    ///         For Casualty the root commits a LossReport
     ///         (spec §5.1): terminal receipts, witness roots, RF-health
     ///         root, salvage/non-recovery documentation. Self-witnessed
     ///         C2/C3 casualty claims are rejected by resolver policy.

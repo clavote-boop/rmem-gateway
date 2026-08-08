@@ -22,9 +22,12 @@ License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 | [`standards/caap-ticket-v0.1.md`](standards/caap-ticket-v0.1.md) | CAAP-TICKET v0.1 — dead-man capability layer for leased bodies: deterministic CBOR/`COSE_Sign1` ticket, issuance handshake, dual-clock expiry, settlement binding, mesh relay-only rules |
 | [`standards/caap-telemetry-v0.1.md`](standards/caap-telemetry-v0.1.md) | CAAP-TELEMETRY v0.1 — evidence wire layer: domain-separated content trees, capture/receipt/terminal/intent CBOR schemas, disclosure bundles, witness attestations |
 | [`standards/m1-failure-state-spec-v0.1.md`](standards/m1-failure-state-spec-v0.1.md) | M1 failure-state spec — normative failure taxonomy, timing model, casualty criteria, and settlement matrix for CAAP-WIPE + LeaseBond |
-| [`standards/caap-lsc-v0.1.md`](standards/caap-lsc-v0.1.md) | CAAP-LSC v0.1 — Local Safety Controller profile: Runtime-Assurance framing, three signing domains, consequence/taint rules, envelope compiler, conformance |
-| [`standards/interfaces/`](standards/interfaces/) | v0.2 Solidity interfaces: `IWipeAttestation` (case registry) + `ILeaseBond` (tranched collateral, typed resolutions) |
-| [`standards/test-vectors/`](standards/test-vectors/) | Golden test vectors: content trees, capsule v2 record trees, HLC64 (seed set; CBOR/COSE and keccak sets planned) |
+| [`standards/caap-lsc-v0.1.md`](standards/caap-lsc-v0.1.md) | CAAP-LSC v0.1 — cognition-to-actuation boundary: architectural invariants, effective-envelope algebra, intent air gap, verdict reason bitmap, provenance/taint policy |
+| [`standards/caap-evidence-v0.1.cddl`](standards/caap-evidence-v0.1.cddl) | Shared integer-key deterministic-CBOR schemas for all M2 evidence objects |
+| [`standards/i-resolution-module-v0.1.md`](standards/i-resolution-module-v0.1.md) | M1 resolver: policy descriptors, phases, appeals, liveness, LeaseBond handshake |
+| [`standards/m2-artifact-index.md`](standards/m2-artifact-index.md) | M2 artifact set index and frozen design decisions |
+| [`standards/interfaces/`](standards/interfaces/) | Solidity interfaces: `CaapM1Types` (shared claim/resolution enums — ABI single source of truth), `IWipeAttestation`, `ILeaseBond`, `IResolutionModule` |
+| [`standards/test-vectors/`](standards/test-vectors/) | Golden vectors: RFC 9162 trees, capsule v2 record trees, HLC64, plus the M2 conformance vectors and the independent `verify-vectors.js` checker |
 | [`embodied-ai-infrastructure-brief.md`](embodied-ai-infrastructure-brief.md) | Architecture brief (M0–M2): gap designs, safety kernel, adversarial-telemetry model, and sequencing across the stack |
 
 ## Quick start
