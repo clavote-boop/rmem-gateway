@@ -1,0 +1,45 @@
+{
+ "spec": "caap-telemetry-v0.1 section 3.2 content tree; capsule v2 record tree per ERC-8331 section 3",
+ "note": "single-leaf tree root equals the leaf hash (no self-duplication); duplication applies only to odd levels of size > 1",
+ "content_tree": {
+  "empty_root": "0x6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+  "chunks_utf8": [
+   "CAAP golden vector chunk 0",
+   "CAAP golden vector chunk 1",
+   "CAAP golden vector chunk 2",
+   "CAAP golden vector chunk 3"
+  ],
+  "leaves": [
+   "0xd6f266e9faa41a14f8611c1c293299e218b04d3b2209c75f5974cb0473d165a8",
+   "0x8d5c8fc859bd7f432aa694a0618ce2e1f32cea6d9ae15c928ab5539c7f600e89",
+   "0x8fd8d76de67b1bf9ad9dd4d29edcc01e88d32cc8b15880db5dab388e2829da98",
+   "0xcea03df5a5a0c5e1d27fb5b9d6eedc8f452b5979f6c3baa1ad648a2bfed5e461"
+  ],
+  "roots": {
+   "1_leaf": "0xd6f266e9faa41a14f8611c1c293299e218b04d3b2209c75f5974cb0473d165a8",
+   "2_leaves": "0xa6d0540f1313faeb8d55ac918858d7bd7819c4667ab7be21f80aaf7646e9e272",
+   "3_leaves_duplicate_last": "0xbe3abccc7ec34d8897f6dc3ffea5586cef668ab8d1a2c1848f4a03aeec9991b8",
+   "4_leaves": "0x3b487c03ea2b4cd4b52d5d16be1557f41544ca506fae9bcbb1c10d137f28c4ac"
+  }
+ },
+ "hlc64": {
+  "unix_ms": 1754680000123,
+  "logical": 7,
+  "encoded_uint64": 114994708488060935,
+  "encoded_hex": "0x01988b13fe7b0007"
+ },
+ "capsule_v2_record_tree": {
+  "record_1": {
+   "record_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+   "payload_hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+   "leaf": "0x93b47bd857c5792fa90a4bac1fcd1747e368d9f09b467bc7a7a46b027427aa60"
+  },
+  "record_2": {
+   "record_id": "0x3333333333333333333333333333333333333333333333333333333333333333",
+   "payload_hash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+   "leaf": "0x686eb74c7a9c97a0269083ba96bce6ca7dd64e16a49dfc0d855df2992b88dd25"
+  },
+  "root_2_records": "0x4c926481acc3dda5196fcdc0aa8506fd14521cd097f1606e88f4d5fd708235d3",
+  "empty_root": "0x6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+ }
+}

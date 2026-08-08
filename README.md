@@ -22,6 +22,9 @@ License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 | [`standards/caap-ticket-v0.1.md`](standards/caap-ticket-v0.1.md) | CAAP-TICKET v0.1 — dead-man capability layer for leased bodies: deterministic CBOR/`COSE_Sign1` ticket, issuance handshake, dual-clock expiry, settlement binding, mesh relay-only rules |
 | [`standards/caap-telemetry-v0.1.md`](standards/caap-telemetry-v0.1.md) | CAAP-TELEMETRY v0.1 — evidence wire layer: domain-separated content trees, capture/receipt/terminal/intent CBOR schemas, disclosure bundles, witness attestations |
 | [`standards/m1-failure-state-spec-v0.1.md`](standards/m1-failure-state-spec-v0.1.md) | M1 failure-state spec — normative failure taxonomy, timing model, casualty criteria, and settlement matrix for CAAP-WIPE + LeaseBond |
+| [`standards/caap-lsc-v0.1.md`](standards/caap-lsc-v0.1.md) | CAAP-LSC v0.1 — Local Safety Controller profile: Runtime-Assurance framing, three signing domains, consequence/taint rules, envelope compiler, conformance |
+| [`standards/interfaces/`](standards/interfaces/) | v0.2 Solidity interfaces: `IWipeAttestation` (case registry) + `ILeaseBond` (tranched collateral, typed resolutions) |
+| [`standards/test-vectors/`](standards/test-vectors/) | Golden test vectors: content trees, capsule v2 record trees, HLC64 (seed set; CBOR/COSE and keccak sets planned) |
 | [`embodied-ai-infrastructure-brief.md`](embodied-ai-infrastructure-brief.md) | Architecture brief (M0–M2): gap designs, safety kernel, adversarial-telemetry model, and sequencing across the stack |
 
 ## Quick start
