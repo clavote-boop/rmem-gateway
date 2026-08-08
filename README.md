@@ -19,6 +19,10 @@ License: **CC0 1.0 Universal** (open standards arm). See [LICENSE](LICENSE.md).
 | [`contracts/`](contracts/) | Solidity `RmemMemoryRegistry` (ERC-8264 + on-chain lease registry + `MemoryAnchored`) + Foundry tests + Sepolia/Base Sepolia deploy script |
 | `standards/erc-8264.md` | ERC-8264 source — also submitted to [ethereum/ERCs PR #1752](https://github.com/ethereum/ERCs/pull/1752) |
 | `standards/capsule-spec-v0.1.md` | Chain-agnostic CAAP-Capsule v0.1 format; companion ERC-8269 "Body Lease and Credential Broker" is [ethereum/ERCs PR #1763](https://github.com/ethereum/ERCs/pull/1763) |
+| [`standards/caap-ticket-v0.1.md`](standards/caap-ticket-v0.1.md) | CAAP-TICKET v0.1 — dead-man capability layer for leased bodies: deterministic CBOR/`COSE_Sign1` ticket, issuance handshake, dual-clock expiry, settlement binding, mesh relay-only rules |
+| [`standards/caap-telemetry-v0.1.md`](standards/caap-telemetry-v0.1.md) | CAAP-TELEMETRY v0.1 — evidence wire layer: domain-separated content trees, capture/receipt/terminal/intent CBOR schemas, disclosure bundles, witness attestations |
+| [`standards/m1-failure-state-spec-v0.1.md`](standards/m1-failure-state-spec-v0.1.md) | M1 failure-state spec — normative failure taxonomy, timing model, casualty criteria, and settlement matrix for CAAP-WIPE + LeaseBond |
+| [`embodied-ai-infrastructure-brief.md`](embodied-ai-infrastructure-brief.md) | Architecture brief (M0–M2): gap designs, safety kernel, adversarial-telemetry model, and sequencing across the stack |
 
 ## Quick start
 
