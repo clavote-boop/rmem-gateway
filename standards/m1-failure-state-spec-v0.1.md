@@ -80,6 +80,9 @@ enum ResolutionCode {
 
 A resolution MUST identify the accepted evidence root, appraisal-policy version, resolver, and payout vector. A single reputation label such as `defaulted` is insufficient.
 
+The authoritative machine-readable declarations of `ResolutionCode`, `ClaimKind`, and `Tranche` are those in `interfaces/CaapM1Types.sol`; enums excerpted in this document are illustrative and yield to that file on any divergence.
+
+
 ## 3. Evidence created before failure
 
 A destruction case is only adjudicable if the protocol manufactures evidence before the incident. The following records are therefore mandatory.
