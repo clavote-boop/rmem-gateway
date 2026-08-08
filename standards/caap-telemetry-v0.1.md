@@ -46,14 +46,18 @@ Telemetry is chunked at capture into **HLC windows** (default `window_ms = 1000`
 
 ### 3.2 Content tree
 
+The content tree is the RFC 9162 Merkle Tree Hash (`MTH`) over the ordered chunk byte strings:
+
 ```
-leaf_i = SHA-256( 0x00 ‖ chunk_bytes_i )
-node   = SHA-256( 0x01 ‖ left ‖ right )
+MTH({})    = SHA-256("")
+MTH([c])   = SHA-256( 0x00 ‖ c )
+MTH(D[n])  = SHA-256( 0x01 ‖ MTH(D[0:k]) ‖ MTH(D[k:n]) ),
+             k = largest power of two < n
 ```
 
-Leaves in capture order; odd levels duplicate the last node; the empty tree's root is `SHA-256(0x00)`. The descriptor MUST commit `leaf_count`, which disambiguates duplicated-last-node trees. The `0x00`/`0x01` domain prefixes prevent leaf/node second-preimage confusion.
+Leaves in capture order; **no odd-leaf duplication** — the split rule makes tree shape a pure function of `leaf_count`, which the descriptor MUST still commit (redundant defense and proof-sizing). The `0x00`/`0x01` domain prefixes prevent leaf/node second-preimage confusion. Inclusion proofs follow RFC 9162 §2.1.3.
 
-**Compatibility note:** the record-level tree over `payload_hash` values (records → capsule `merkle_root`) remains exactly CAAP-Capsule v0.1 §4.4, unprefixed, for wire compatibility. CAAP-Capsule v0.2 SHOULD adopt the same domain prefixes; until then the two constructions are distinct by specification, not guessable by verifiers.
+**Compatibility note:** the Portable Agent Memory Capsule ERC's record-level tree uses this same RFC 9162 construction (over `record_id ‖ payload_hash` entries), so one verifier implementation serves both layers. The legacy CAAP-Capsule v0.1 §4.4 tree (unprefixed, duplicate-last) remains distinct by specification for v1 capsules only; CAAP-Capsule v0.2 aligns on RFC 9162.
 
 ### 3.3 Two commitments per record
 
@@ -95,7 +99,7 @@ capture-attestation = {
 }
 ```
 
-`time_source_class` is evidence weighting, not decoration: resolvers SHOULD discount class-0 timestamps in contested windows. `capture_counter` + `boot_counter` place every record in the body's session ordering — the same counters CAAP-WIPE contradiction checks read.
+`time_source_class` is evidence weighting, not decoration: resolvers SHOULD discount class-0 timestamps in contested windows. **Ordering is normative on `(boot_counter, capture_counter)`** — the rollback-protected counters the CAAP-WIPE contradiction checks also read; HLC64 values are correlation evidence for cross-body alignment, never the primary order. Two records from one signer are ordered by counters even when their HLC values disagree.
 
 ## 5. Execution profile (CAAP-LSC wire)
 

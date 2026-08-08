@@ -35,31 +35,34 @@ Tickets are encoded as **deterministic CBOR** per RFC 8949 §4.2.1 (preferred se
 ```cddl
 dead-man-ticket = {
    0: uint,             ; version = 1
-   1: bstr .size 32,    ; lease_id_digest      keccak256(canonical lease JSON)
-   2: bstr .size 32,    ; subject_id_hash
-   3: bstr .size 32,    ; body_attestation_key_hash   (enrolled BAK, CAAP-WIPE §2.1)
-   4: bstr .size 32,    ; attestation_digest   hash of the handshake attestation report
-   5: uint,             ; boot_counter         body TEE boot-session counter
-   6: bstr .size 32,    ; challenge_hash       hash of the LSC's fresh RNG challenge
-   7: uint,             ; chain_id
-   8: bstr .size 20,    ; settlement_contract
-   9: bstr .size 32,    ; settlement_block_hash    finalized block the gateway observed
-  10: uint,             ; settlement_block_number
-  11: uint,             ; revocation_epoch
-  12: uint,             ; gateway_set_epoch
-  13: uint,             ; ticket_sequence      strictly monotonic per lease
-  14: bstr .size 32,    ; previous_ticket_hash (zero-filled for sequence 1)
-  15: uint,             ; issued_at            unix seconds, issuer clock
-  16: uint,             ; not_before
-  17: uint,             ; expires_at
-  18: uint,             ; maximum_runtime_ms   monotonic-clock lifetime bound
-  19: uint,             ; capability_bitmap    over the lease's declared capability table
-  20: uint,             ; consequence_ceiling  0..3 (C0..C3); LSC classes above this are refused
-  21: bstr .size 32,    ; safety_envelope_digest
-  22: bstr .size 32,    ; minimal_risk_policy_digest
-  23: ? [* bstr .size 32] ; cosign_grant_digests  owner-signed C3 grant objects, ticket-scoped
+   1: bstr .size 32,    ; lease_id       keccak256(utf8(lease.lease_id)) — lifecycle identity
+   2: bstr .size 32,    ; lease_digest   keccak256(RFC 8785 canonical lease JSON) — revision-exact content
+   3: bstr .size 32,    ; subject_id_hash
+   4: bstr .size 32,    ; body_attestation_key_hash   (enrolled BAK, CAAP-WIPE §2.1)
+   5: bstr .size 32,    ; attestation_digest   hash of the handshake attestation report
+   6: uint,             ; boot_counter         body TEE boot-session counter
+   7: bstr .size 32,    ; challenge_hash       hash of the LSC's fresh RNG challenge
+   8: uint,             ; chain_id
+   9: bstr .size 20,    ; settlement_contract
+  10: bstr .size 32,    ; settlement_block_hash    finalized block the gateway observed
+  11: uint,             ; settlement_block_number
+  12: uint,             ; revocation_epoch
+  13: uint,             ; gateway_set_epoch
+  14: uint,             ; ticket_sequence      strictly monotonic per lease
+  15: bstr .size 32,    ; previous_ticket_hash (zero-filled for sequence 1)
+  16: uint,             ; issued_at            unix seconds, issuer clock
+  17: uint,             ; not_before
+  18: uint,             ; expires_at
+  19: uint,             ; maximum_runtime_ms   monotonic-clock lifetime bound
+  20: uint,             ; capability_bitmap    over the lease's declared capability table
+  21: uint,             ; consequence_ceiling  0..3 (C0..C3); LSC classes above this are refused
+  22: bstr .size 32,    ; safety_envelope_digest
+  23: bstr .size 32,    ; minimal_risk_policy_digest
+  24: ? [* bstr .size 32] ; cosign_grant_digests  owner-signed C3 grant objects, ticket-scoped
 }
 ```
+
+`lease_id` and `lease_digest` are deliberately distinct: the former joins settlement, wipe, and bond state across the lease's lifecycle; the latter pins the exact signed revision the ticket was issued under. Verifiers MUST check both — a ticket whose `lease_digest` does not match the highest-revision lease known for its `lease_id` MUST be rejected.
 
 The map is **closed**: decoders MUST reject unknown keys. Schema changes require a `version` bump. Any COSE protected-header extension parameters MUST be marked critical (`crit`, RFC 9052 §3.1) so unrecognized extensions are a hard failure, never a silent pass. Because every context-binding field (lease, body, boot session, chain, epochs) is carried in the signed payload itself, `external_aad` MAY be left empty; implementations that populate it MUST document what the verifier supplies.
 
@@ -174,7 +177,7 @@ P-256 (ES256) is RECOMMENDED for the hardware-backed gateway, TEE, and LSC keys:
 | Ethereum unavailable | Continue only until current ticket expires |
 | 5G jammed but mesh works | Mesh relays valid tickets; authority unchanged |
 | All networking lost | Execute minimal-risk policy at expiry |
-| Gateway compromised | Damage window bounded by TTL and certified envelope |
+| Gateway compromised | Renewal can continue until lease expiry within the certified envelope, absent an independent revocation source; threshold issuance or body-verified chain proofs narrow the window to TTL |
 | Gateway key revoked | Old epoch rejected immediately when learned, otherwise at ticket expiry |
 | Ticket replayed after reboot | Boot-counter mismatch → reject |
 | Body cloned | Attestation-key or challenge mismatch → reject |
@@ -184,7 +187,7 @@ P-256 (ES256) is RECOMMENDED for the hardware-backed gateway, TEE, and LSC keys:
 
 ## 9. Security considerations
 
-- **Issuer compromise** is the model's chokepoint: bounded by ticket TTL, the certified envelope, and the lease's own expiry; continued issuance after an observable on-chain revocation is attributable, slashable misbehavior. Threshold issuance narrows the window further for high-consequence bodies.
+- **Issuer compromise** is the model's chokepoint, stated honestly: with a single compromised issuer, renewal continues until the lease's own expiry — attribution and slashing after an observable on-chain revocation are deterrence and recourse, not enforcement, because the body trusts issuer signatures. The mitigations that actually shorten the window: **threshold issuance** (a compromised minority cannot renew alone), and **body-side verification of relayed chain proofs** of the current revocation epoch against the epoch bound into each ticket, rejecting stale-epoch tickets. High-consequence deployments SHOULD require one or both, plus short lease expiries.
 - **The ticket cannot be a motion command.** Verifiers MUST treat any attempt to encode actuation targets in ticket fields as schema violation; motion flows only through the CAAP-LSC `IntentPayload` path.
 - **Downgrade:** verifiers MUST NOT accept `version` values below the highest they have processed for a given lease.
 - **Denial of service is the accepted cost.** Every failure row above degrades toward the minimal-risk action and safe state. This is by construction: the adversary who controls the network can silence a body, never seize it.

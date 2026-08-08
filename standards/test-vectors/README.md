@@ -9,9 +9,9 @@
 
 ## Construction rules the vectors pin down
 
-1. Content tree: `leaf = SHA-256(0x00 ‖ chunk_bytes)`, `node = SHA-256(0x01 ‖ left ‖ right)`, odd levels duplicate the last node, empty tree root = `SHA-256(0x00)`.
-2. **Single-leaf tree root equals the leaf hash** — no self-duplication at size 1; duplication applies only to odd levels of size > 1. (Clarifies an ambiguity in the v0.1 prose; fold into the next spec revision.)
-3. Capsule v2 record tree: `leaf = SHA-256(0x00 ‖ record_id(32) ‖ payload_hash(32))` — 65-byte preimage of raw bytes, never hex strings.
+1. All trees are the **RFC 9162 Merkle Tree Hash**: `MTH({}) = SHA-256("")`, `MTH([e]) = SHA-256(0x00 ‖ e)`, `MTH(D[n]) = SHA-256(0x01 ‖ MTH(D[0:k]) ‖ MTH(D[k:n]))` with `k` = largest power of two < n. No odd-leaf duplication; tree shape is a pure function of entry count.
+2. Content-tree entries are raw chunk bytes in capture order (CAAP-TELEMETRY §3.2).
+3. Capsule v2 record-tree entries are 64-byte `record_id(32) ‖ payload_hash(32)` concatenations of raw bytes (never hex strings), sorted ascending by `record_id` (Portable Agent Memory Capsule ERC §3).
 4. HLC64: `uint64 = (unix_ms << 16) | logical_counter`.
 
 ## Planned additions (contributions welcome)
@@ -24,4 +24,4 @@
 
 ## Regenerating
 
-The seed vectors are generated with a Python-stdlib-only script (SHA-256, no external deps) so any implementer can re-derive them. Any mismatch between an implementation and these vectors is a bug in one of the two — file an issue either way.
+Run `python3 generate_vectors.py` in this directory — the committed, stdlib-only generator (SHA-256, no external deps) rewrites `merkle-hlc-vectors.json` deterministically. Any mismatch between an implementation and these vectors is a bug in one of the two — file an issue either way.
